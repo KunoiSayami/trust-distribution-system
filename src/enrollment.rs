@@ -1,5 +1,5 @@
 use anyhow::anyhow;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -38,9 +38,9 @@ impl TokenStore {
     /// Find and validate a token by its secret
     pub fn validate(&self, secret: &str) -> Option<&TokenEntry> {
         let secret_hash = hash_secret(secret);
-        self.tokens.iter().find(|t| {
-            t.token_hash == secret_hash && !t.used && !t.is_expired()
-        })
+        self.tokens
+            .iter()
+            .find(|t| t.token_hash == secret_hash && !t.used && !t.is_expired())
     }
 
     /// Mark a token as used
@@ -56,18 +56,16 @@ impl TokenStore {
 
     /// Remove expired tokens
     pub fn cleanup(&mut self) {
-        let now = chrono::Utc::now();
-        self.tokens.retain(|t| {
-            let expiry = chrono::DateTime::parse_from_rfc3339(&t.expires_at)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or(now);
-            expiry > now && !t.used
-        });
+        let now = chrono::Utc::now().timestamp();
+        self.tokens.retain(|t| t.expires_at > now && !t.used);
     }
 
     /// List pending (unused, not expired) tokens
     pub fn pending(&self) -> Vec<&TokenEntry> {
-        self.tokens.iter().filter(|t| !t.used && !t.is_expired()).collect()
+        self.tokens
+            .iter()
+            .filter(|t| !t.used && !t.is_expired())
+            .collect()
     }
 
     /// Revoke a token by client_id
@@ -86,20 +84,32 @@ pub struct TokenEntry {
     pub client_id: String,
     /// Groups the client will be added to
     pub groups: Vec<String>,
-    /// When the token was created
-    pub created_at: String,
-    /// When the token expires
-    pub expires_at: String,
+    /// When the token was created (unix timestamp seconds)
+    pub created_at: i64,
+    /// When the token expires (unix timestamp seconds)
+    pub expires_at: i64,
     /// Whether the token has been used
     pub used: bool,
 }
 
 impl TokenEntry {
     pub fn is_expired(&self) -> bool {
-        let now = chrono::Utc::now();
-        chrono::DateTime::parse_from_rfc3339(&self.expires_at)
-            .map(|dt| dt.with_timezone(&chrono::Utc) <= now)
-            .unwrap_or(true)
+        let now = chrono::Utc::now().timestamp();
+        self.expires_at <= now
+    }
+
+    /// Format expires_at as human-readable string
+    pub fn expires_at_string(&self) -> String {
+        chrono::DateTime::from_timestamp(self.expires_at, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "invalid".to_string())
+    }
+
+    /// Format created_at as human-readable string
+    pub fn created_at_string(&self) -> String {
+        chrono::DateTime::from_timestamp(self.created_at, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "invalid".to_string())
     }
 }
 
@@ -133,8 +143,8 @@ pub fn generate_token(
         token_hash: hash_secret(&secret_b64),
         client_id: client_id.to_string(),
         groups: groups.to_vec(),
-        created_at: now.to_rfc3339(),
-        expires_at: expires.to_rfc3339(),
+        created_at: now.timestamp(),
+        expires_at: expires.timestamp(),
         used: false,
     };
 

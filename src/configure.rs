@@ -5,6 +5,7 @@ use std::path::PathBuf;
 /// Server configuration
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServerConfig {
+    #[allow(unused)]
     pub version: u32,
     pub server: ServerSettings,
     #[serde(default)]

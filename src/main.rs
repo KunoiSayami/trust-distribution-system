@@ -51,9 +51,9 @@ enum TokenAction {
         /// Comma-separated list of groups
         #[arg(long)]
         groups: String,
-        /// Token expiry in hours (default: 1)
-        #[arg(long, default_value = "1")]
-        expiry: u32,
+        /// Token expiry in hours (default: from config or 1)
+        #[arg(long)]
+        expiry: Option<u32>,
     },
     /// List pending tokens
     List,
@@ -154,6 +154,8 @@ async fn token_command(action: TokenAction, config_path: PathBuf) -> anyhow::Res
     match action {
         TokenAction::New { client_id, groups, expiry } => {
             let groups: Vec<String> = groups.split(',').map(|s| s.trim().to_string()).collect();
+            // Use expiry from CLI arg, or fall back to config default
+            let expiry_hours = expiry.unwrap_or(config.server.enrollment.token_expiry_hours);
 
             let server_age_recipient = age_identity.to_recipient().to_string();
             let server_verify_key = BASE64.encode(signing_key.verifying_key().to_bytes());
@@ -163,13 +165,13 @@ async fn token_command(action: TokenAction, config_path: PathBuf) -> anyhow::Res
                 &groups,
                 &server_age_recipient,
                 &server_verify_key,
-                expiry,
+                expiry_hours,
             );
 
             token_store.add(entry);
             token_store.save(&token_store_path)?;
 
-            println!("Enrollment token (expires in {} hour(s)):", expiry);
+            println!("Enrollment token (expires in {} hour(s)):", expiry_hours);
             println!("  {}", token);
             println!("\nClient ID: {}", client_id);
             println!("Groups: {}", groups.join(", "));
@@ -186,7 +188,7 @@ async fn token_command(action: TokenAction, config_path: PathBuf) -> anyhow::Res
                         "{:<20} {:<30} {:<25}",
                         entry.client_id,
                         entry.groups.join(","),
-                        entry.expires_at
+                        entry.expires_at_string()
                     );
                 }
             }

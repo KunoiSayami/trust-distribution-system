@@ -18,9 +18,8 @@ pub fn execute_actions(
         if let Some(action) = config.actions.files.get(&file.path) {
             if action.on_change_only {
                 log::info!("Running file action for {}", file.path);
-                run_action(action).with_context(|| {
-                    format!("Failed to run action for file {}", file.path)
-                })?;
+                run_action(action)
+                    .with_context(|| format!("Failed to run action for file {}", file.path))?;
             }
         }
     }
@@ -40,6 +39,7 @@ pub fn execute_actions(
 }
 
 /// Execute all actions regardless of changes (for initial sync or force)
+#[allow(unused)]
 pub fn execute_all_actions(config: &ClientConfig) -> anyhow::Result<()> {
     // Execute all group actions
     for (group, action) in &config.actions.groups {

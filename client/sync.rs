@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Context};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use anyhow::{Context, anyhow};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,6 +11,7 @@ use crate::config::ClientConfig;
 /// Manifest response from server
 #[derive(Debug, Deserialize)]
 pub struct ManifestResponse {
+    #[allow(unused)]
     pub version: u32,
     pub timestamp: i64,
     pub files: Vec<ManifestFileEntry>,
@@ -134,8 +135,12 @@ impl TdsClient {
             .decode(&manifest.signature)
             .context("Invalid manifest signature encoding")?;
 
-        let valid =
-            encryption::verify(&self.server_verify_key, &manifest_data, &signature, manifest.timestamp)?;
+        let valid = encryption::verify(
+            &self.server_verify_key,
+            &manifest_data,
+            &signature,
+            manifest.timestamp,
+        )?;
         if !valid {
             return Err(anyhow!("Invalid manifest signature"));
         }
@@ -171,8 +176,8 @@ impl TdsClient {
         let body = response.bytes().await?;
 
         // Parse CBOR transmission file
-        let transmission =
-            encryption::TransmissionFile::from_cbor(&body).context("Failed to parse transmission file")?;
+        let transmission = encryption::TransmissionFile::from_cbor(&body)
+            .context("Failed to parse transmission file")?;
 
         // Verify signature
         let encrypted_bytes = match transmission.body() {
@@ -236,10 +241,7 @@ pub fn files_to_download(
 }
 
 /// Determine the output path for a file
-pub fn get_output_path(
-    file: &ManifestFileEntry,
-    config: &ClientConfig,
-) -> Option<PathBuf> {
+pub fn get_output_path(file: &ManifestFileEntry, config: &ClientConfig) -> Option<PathBuf> {
     let subscription = config.subscriptions.get(&file.group)?;
 
     // Get the filename, handling potential renames

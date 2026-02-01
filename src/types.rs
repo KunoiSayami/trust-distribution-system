@@ -112,8 +112,15 @@ pub struct ManifestFileEntry {
 
 #[derive(Debug, Deserialize)]
 pub struct EnrollRequest {
+    /// Token secret for token-based enrollment
+    #[serde(default)]
     pub token_secret: String,
+    /// Encrypted payload containing client keys
     pub encrypted_payload: String,
+    /// Client ID for localhost enrollment (when allow_localhost is enabled)
+    pub client_id: Option<String>,
+    /// Groups for localhost enrollment (when allow_localhost is enabled)
+    pub groups: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]

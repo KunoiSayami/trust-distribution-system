@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use axum::{
     Router,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -305,19 +305,59 @@ async fn authenticate_request(
 /// Client enrollment endpoint
 async fn enroll_handler(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(request): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Validate token
-    let mut token_store = state.token_store.write().await;
-    let token_entry = token_store.validate(&request.token_secret).ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse::new("Invalid or expired token", "INVALID_TOKEN")),
-        )
-    })?;
+    // Check if enrollment is enabled
+    let config = state.config.read().await;
+    let enrollment_config = &config.server.enrollment;
 
-    let client_id = token_entry.client_id.clone();
-    let groups = token_entry.groups.clone();
+    if !enrollment_config.enabled {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new("Enrollment is disabled", "ENROLLMENT_DISABLED")),
+        ));
+    }
+
+    // Check if localhost bypass is allowed
+    let is_localhost = addr.ip().is_loopback();
+    let skip_token = enrollment_config.allow_localhost && is_localhost;
+    drop(config); // Release read lock before acquiring write lock
+
+    // Validate token (unless localhost bypass)
+    let mut token_store = state.token_store.write().await;
+    let (client_id, groups) = if skip_token {
+        // Localhost enrollment without token - require client_id and groups in request
+        let client_id = request.client_id.clone().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(
+                    "client_id required for localhost enrollment",
+                    "MISSING_CLIENT_ID",
+                )),
+            )
+        })?;
+        let groups = request.groups.clone().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(
+                    "groups required for localhost enrollment",
+                    "MISSING_GROUPS",
+                )),
+            )
+        })?;
+        log::info!("Localhost enrollment for client: {}", client_id);
+        (client_id, groups)
+    } else {
+        // Normal token-based enrollment
+        let token_entry = token_store.validate(&request.token_secret).ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse::new("Invalid or expired token", "INVALID_TOKEN")),
+            )
+        })?;
+        (token_entry.client_id.clone(), token_entry.groups.clone())
+    };
 
     // Decrypt the payload using server's age identity
     let encrypted_payload = BASE64.decode(&request.encrypted_payload).map_err(|_| {
@@ -349,14 +389,16 @@ async fn enroll_handler(
         ));
     }
 
-    // Mark token as used
-    token_store.mark_used(&request.token_secret);
-    token_store.save(&state.token_store_path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(e.to_string(), "SAVE_ERROR")),
-        )
-    })?;
+    // Mark token as used (only for token-based enrollment)
+    if !skip_token {
+        token_store.mark_used(&request.token_secret);
+        token_store.save(&state.token_store_path).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(e.to_string(), "SAVE_ERROR")),
+            )
+        })?;
+    }
 
     // Add client to config
     let client_entry = ClientEntry {
