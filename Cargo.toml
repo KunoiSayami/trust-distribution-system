@@ -19,6 +19,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 toml = "0.9"
 encryption = { path = "lib/encryption" }
+pub-impl = { path = "lib/pub-impl" }
 
 # Additional dependencies for server/client
 chrono = { version = "0.4", features = ["serde"] }

@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -151,33 +150,10 @@ pub fn generate_token(
     (token, entry)
 }
 
-/// Parse an enrollment token
-pub struct ParsedToken {
-    pub secret: String,
-    pub server_age_recipient: String,
-    pub server_verify_key: String,
-}
-
-impl ParsedToken {
-    pub fn parse(token: &str) -> anyhow::Result<Self> {
-        let parts: Vec<&str> = token.split(':').collect();
-        if parts.len() != 4 {
-            return Err(anyhow!("Invalid token format"));
-        }
-        if parts[0] != "tds-enroll-v1" {
-            return Err(anyhow!("Unsupported token version"));
-        }
-
-        Ok(Self {
-            secret: parts[1].to_string(),
-            server_age_recipient: parts[2].to_string(),
-            server_verify_key: parts[3].to_string(),
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use pub_impl::ParsedToken;
+
     use super::*;
 
     #[test]

@@ -202,7 +202,7 @@ pub struct RawSigningKey {
 
 impl RawSigningKey {
     pub fn from_signing_key(key: &SigningKey) -> Self {
-        use base64::{engine::general_purpose::STANDARD, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD};
         Self {
             private_key: STANDARD.encode(key.to_bytes()),
             public_key: STANDARD.encode(key.verifying_key().to_bytes()),
@@ -210,7 +210,7 @@ impl RawSigningKey {
     }
 
     pub fn to_signing_key(&self) -> anyhow::Result<SigningKey> {
-        use base64::{engine::general_purpose::STANDARD, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD};
         let bytes = STANDARD.decode(&self.private_key)?;
         let bytes: [u8; 32] = bytes
             .try_into()
@@ -219,7 +219,7 @@ impl RawSigningKey {
     }
 
     pub fn to_verifying_key(&self) -> anyhow::Result<VerifyingKey> {
-        use base64::{engine::general_purpose::STANDARD, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD};
         let bytes = STANDARD.decode(&self.public_key)?;
         let bytes: [u8; 32] = bytes
             .try_into()
@@ -237,14 +237,14 @@ pub struct RawVerifyingKey {
 
 impl RawVerifyingKey {
     pub fn from_verifying_key(key: &VerifyingKey) -> Self {
-        use base64::{engine::general_purpose::STANDARD, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD};
         Self {
             public_key: STANDARD.encode(key.to_bytes()),
         }
     }
 
     pub fn to_verifying_key(&self) -> anyhow::Result<VerifyingKey> {
-        use base64::{engine::general_purpose::STANDARD, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD};
         let bytes = STANDARD.decode(&self.public_key)?;
         let bytes: [u8; 32] = bytes
             .try_into()
@@ -402,9 +402,12 @@ pub struct RawKeyStore {
 
 impl RawKeyStore {
     pub fn from_key_store(ks: &KeyStore) -> Self {
-        use base64::{engine::general_purpose::STANDARD, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD};
         Self {
-            signing_key: ks.signing_key.as_ref().map(|k| STANDARD.encode(k.to_bytes())),
+            signing_key: ks
+                .signing_key
+                .as_ref()
+                .map(|k| STANDARD.encode(k.to_bytes())),
             verifying_key: STANDARD.encode(ks.verifying_key.to_bytes()),
             age_identity: ks.age_identity.as_ref().map(|i| i.to_string()),
             age_recipient: ks.age_recipient.to_string(),
@@ -412,7 +415,7 @@ impl RawKeyStore {
     }
 
     pub fn to_key_store(&self) -> anyhow::Result<KeyStore> {
-        use base64::{engine::general_purpose::STANDARD, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD};
 
         let verifying_bytes = STANDARD.decode(&self.verifying_key)?;
         let verifying_bytes: [u8; 32] = verifying_bytes

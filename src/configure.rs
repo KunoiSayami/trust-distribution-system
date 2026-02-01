@@ -91,6 +91,7 @@ pub struct ServerSettings {
     pub bind: String,
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+    #[allow(unused)]
     #[serde(default)]
     pub proxy: Option<ProxyConfig>,
     pub keys: ServerKeyConfig,
@@ -104,6 +105,7 @@ pub struct TlsConfig {
     pub key_path: PathBuf,
 }
 
+#[allow(unused)]
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct ProxyConfig {
     #[serde(default)]
@@ -159,7 +161,7 @@ pub struct ClientEntry {
 /// Group configuration
 #[derive(Clone, Debug, Deserialize)]
 pub struct GroupConfig {
-    #[serde(default)]
+    #[allow(unused)]
     pub description: Option<String>,
     #[serde(default)]
     pub files: Vec<String>,

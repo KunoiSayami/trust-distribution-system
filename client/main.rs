@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use clap::{Parser, Subcommand};
+use pub_impl::ParsedToken;
 use serde::{Deserialize, Serialize};
 
 mod actions;
@@ -141,7 +142,11 @@ async fn sync_once(
                 let output_path = match sync::get_output_path(file, config) {
                     Some(p) => p,
                     None => {
-                        log::warn!("No subscription for group {}, skipping {}", file.group, file.path);
+                        log::warn!(
+                            "No subscription for group {}, skipping {}",
+                            file.group,
+                            file.path
+                        );
                         continue;
                     }
                 };
@@ -156,7 +161,9 @@ async fn sync_once(
                 log::info!("Wrote {} ({} bytes)", output_path.display(), content.len());
 
                 // Update state
-                state.file_hashes.insert(file.path.clone(), file.content_hash.clone());
+                state
+                    .file_hashes
+                    .insert(file.path.clone(), file.content_hash.clone());
                 downloaded_files.push(file.clone());
             }
             Err(e) => {
@@ -221,31 +228,6 @@ async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
     );
 
     Ok(())
-}
-
-/// Parse enrollment token
-struct ParsedToken {
-    secret: String,
-    server_age_recipient: String,
-    server_verify_key: String,
-}
-
-impl ParsedToken {
-    fn parse(token: &str) -> anyhow::Result<Self> {
-        let parts: Vec<&str> = token.split(':').collect();
-        if parts.len() != 4 {
-            anyhow::bail!("Invalid token format");
-        }
-        if parts[0] != "tds-enroll-v1" {
-            anyhow::bail!("Unsupported token version");
-        }
-
-        Ok(Self {
-            secret: parts[1].to_string(),
-            server_age_recipient: parts[2].to_string(),
-            server_verify_key: parts[3].to_string(),
-        })
-    }
 }
 
 #[derive(Serialize)]
@@ -361,7 +343,10 @@ server_verify_key = "{}"
     println!("✓ Config written to {}", config_path.display());
     println!("✓ Keys written to {}", config_dir.display());
     println!("\nNext steps:");
-    println!("1. Edit {} to configure subscriptions", config_path.display());
+    println!(
+        "1. Edit {} to configure subscriptions",
+        config_path.display()
+    );
     println!("2. Run: client -c {} run", config_path.display());
 
     Ok(())
@@ -372,7 +357,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Run { once }) => run_client(cli.config, once).await,
         Some(Commands::Keygen { output }) => generate_keys(output).await,
         Some(Commands::Sync) => run_client(cli.config, true).await,
-        Some(Commands::Enroll { server, token, config_dir }) => enroll(server, token, config_dir).await,
+        Some(Commands::Enroll {
+            server,
+            token,
+            config_dir,
+        }) => enroll(server, token, config_dir).await,
         None => run_client(cli.config, false).await,
     }
 }
