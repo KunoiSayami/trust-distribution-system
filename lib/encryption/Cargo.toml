@@ -1,0 +1,38 @@
+[package]
+name = "encryption"
+version = "0.6.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+chrono = "^0.4"
+log = { version = "0.4", features = [
+    "release_max_level_debug",
+    "max_level_trace",
+] }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+minicbor-serde = { version = "0.6.0", features = ["alloc"] }
+tokio = { version = "1", optional = true, features = ["io-util", "fs"] }
+
+# Age encryption
+age = { version = "0.11", features = ["armor"] }
+
+# Ed25519 signing
+ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
+
+# Base64 encoding for keys
+base64 = "0.22"
+
+# Hex encoding for hashes
+hex = "0.4"
+
+# Zeroize for secure key handling
+zeroize = { version = "1", features = ["derive"] }
+
+[features]
+blocking = []
+async = ["tokio"]
+default = ["async"]
