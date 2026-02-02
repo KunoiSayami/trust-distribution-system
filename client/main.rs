@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use clap::{Parser, Subcommand};
-use pub_impl::ParsedToken;
-use serde::{Deserialize, Serialize};
+use pub_impl::{EnrollPayload, EnrollRequest, EnrollResponse, ParsedToken};
 
 mod actions;
 mod config;
@@ -56,7 +55,7 @@ enum Commands {
 }
 
 async fn run_client(config_path: PathBuf, once: bool) -> anyhow::Result<()> {
-    log::info!("Loading configuration from {:?}", config_path);
+    log::info!("Loading configuration from {config_path:?}");
     let config = ClientConfig::load(&config_path)?;
 
     log::info!("Loading client keys...");
@@ -101,7 +100,7 @@ async fn run_client(config_path: PathBuf, once: bool) -> anyhow::Result<()> {
 
         loop {
             if let Err(e) = sync_once(&client, &config, &mut state, &subscribed_groups).await {
-                log::error!("Sync failed: {}", e);
+                log::error!("Sync failed: {e:?}");
             }
 
             tokio::time::sleep(poll_interval).await;
@@ -180,7 +179,7 @@ async fn sync_once(
     if !downloaded_files.is_empty() {
         log::info!("Executing post-download actions...");
         if let Err(e) = actions::execute_actions(&downloaded_files, config) {
-            log::error!("Action execution failed: {}", e);
+            log::error!("Action execution failed: {e:?}");
         }
     }
 
@@ -188,7 +187,7 @@ async fn sync_once(
 }
 
 async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
-    log::info!("Generating client keys in {:?}", output);
+    log::info!("Generating client keys in {output:?}");
 
     // Create output directory if needed
     tokio::fs::create_dir_all(&output).await?;
@@ -211,12 +210,12 @@ async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
 
     encryption::async_fn::write_age_identity(&age_identity_path, &age_identity).await?;
 
-    log::info!("Wrote age identity to {:?}", age_identity_path);
+    log::info!("Wrote age identity to {age_identity_path:?}");
 
     // Print public keys for server registration
     println!("\nClient keys generated successfully!");
-    println!("Signing key: {:?}", signing_key_path);
-    println!("Age identity: {:?}", age_identity_path);
+    println!("Signing key: {signing_key_path:?}");
+    println!("Age identity: {age_identity_path:?}");
     println!("\n--- Add to server config ---");
     println!(
         "age_public_key = \"{}\"",
@@ -228,24 +227,6 @@ async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
     );
 
     Ok(())
-}
-
-#[derive(Serialize)]
-struct EnrollRequest {
-    token_secret: String,
-    encrypted_payload: String,
-}
-
-#[derive(Serialize)]
-struct EnrollPayload {
-    age_public_key: String,
-    auth_public_key: String,
-}
-
-#[derive(Deserialize)]
-struct EnrollResponse {
-    client_id: String,
-    groups: Vec<String>,
 }
 
 async fn enroll(server: String, token: String, config_dir: PathBuf) -> anyhow::Result<()> {
@@ -289,6 +270,8 @@ async fn enroll(server: String, token: String, config_dir: PathBuf) -> anyhow::R
         .json(&EnrollRequest {
             token_secret: parsed.secret,
             encrypted_payload: encrypted_b64,
+            client_id: None,
+            groups: None,
         })
         .send()
         .await?;
@@ -296,7 +279,7 @@ async fn enroll(server: String, token: String, config_dir: PathBuf) -> anyhow::R
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Enrollment failed: {} - {}", status, body);
+        anyhow::bail!("Enrollment failed: {status} - {body}");
     }
 
     let enroll_response: EnrollResponse = response.json().await?;
@@ -311,7 +294,7 @@ async fn enroll(server: String, token: String, config_dir: PathBuf) -> anyhow::R
 
 [client]
 id = "{}"
-server_url = "{}"
+server_url = "{server}"
 poll_interval = 300
 state_file = "{}"
 
@@ -331,7 +314,6 @@ server_verify_key = "{}"
 # on_change_only = true
 "#,
         enroll_response.client_id,
-        server,
         config_dir.join("state.json").display(),
         age_identity_path.display(),
         signing_key_path.display(),

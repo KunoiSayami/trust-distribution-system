@@ -89,16 +89,16 @@ impl ServerConfig {
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServerSettings {
     pub bind: String,
-    #[serde(default)]
+    #[allow(unused)]
     pub tls: Option<TlsConfig>,
     #[allow(unused)]
-    #[serde(default)]
     pub proxy: Option<ProxyConfig>,
     pub keys: ServerKeyConfig,
     #[serde(default)]
     pub enrollment: EnrollmentConfig,
 }
 
+#[allow(unused)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct TlsConfig {
     pub cert_path: PathBuf,

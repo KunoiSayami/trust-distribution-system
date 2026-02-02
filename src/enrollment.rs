@@ -105,6 +105,7 @@ impl TokenEntry {
     }
 
     /// Format created_at as human-readable string
+    #[allow(unused)]
     pub fn created_at_string(&self) -> String {
         chrono::DateTime::from_timestamp(self.created_at, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())

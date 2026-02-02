@@ -1,7 +1,40 @@
 use anyhow::anyhow;
+use serde::{Deserialize, Serialize};
 
 /// Token format prefix
 pub const TOKEN_VERSION: &str = "tds-enroll-v1";
+
+// ============================================================================
+// Shared enrollment types (used by both server and client)
+// ============================================================================
+
+/// Enrollment request sent from client to server
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EnrollRequest {
+    /// Token secret for token-based enrollment
+    #[serde(default)]
+    pub token_secret: String,
+    /// Encrypted payload containing client keys
+    pub encrypted_payload: String,
+    /// Client ID for localhost enrollment (when allow_localhost is enabled)
+    pub client_id: Option<String>,
+    /// Groups for localhost enrollment (when allow_localhost is enabled)
+    pub groups: Option<Vec<String>>,
+}
+
+/// Payload inside the encrypted enrollment request
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EnrollPayload {
+    pub age_public_key: String,
+    pub auth_public_key: String,
+}
+
+/// Enrollment response from server to client
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EnrollResponse {
+    pub client_id: String,
+    pub groups: Vec<String>,
+}
 
 /// Parsed enrollment token
 #[derive(Debug, Clone)]
