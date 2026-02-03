@@ -19,7 +19,6 @@ pub struct AppState {
     pub server_age_identity: Arc<encryption::AgeIdentity>,
     pub nonce_cache: Arc<NonceCache>,
     pub token_store: Arc<RwLock<TokenStore>>,
-    pub token_store_path: PathBuf,
     pub config_path: PathBuf,
 }
 
@@ -29,18 +28,14 @@ impl AppState {
         signing_key: encryption::SigningKey,
         age_identity: encryption::AgeIdentity,
         token_store: TokenStore,
-        token_store_path: PathBuf,
+        config_path: PathBuf,
     ) -> Self {
-        let config_path = token_store_path.parent()
-            .map(|p| p.join("server.toml"))
-            .unwrap_or_else(|| PathBuf::from("server.toml"));
         Self {
             config: Arc::new(RwLock::new(config)),
             server_signing_key: Arc::new(signing_key),
             server_age_identity: Arc::new(age_identity),
             nonce_cache: Arc::new(NonceCache::new()),
             token_store: Arc::new(RwLock::new(token_store)),
-            token_store_path,
             config_path,
         }
     }

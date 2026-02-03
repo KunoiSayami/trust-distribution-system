@@ -96,6 +96,17 @@ pub struct ServerSettings {
     pub keys: ServerKeyConfig,
     #[serde(default)]
     pub enrollment: EnrollmentConfig,
+    /// Admin authentication config (optional - disables admin endpoint if not set)
+    pub admin: Option<AdminConfig>,
+}
+
+/// Admin authentication configuration
+#[derive(Clone, Debug, Deserialize)]
+pub struct AdminConfig {
+    /// Argon2id password hash (PHC string format)
+    pub password_hash: String,
+    /// Base32-encoded TOTP secret
+    pub totp_secret: String,
 }
 
 #[allow(unused)]
@@ -154,7 +165,6 @@ pub struct ClientEntry {
     pub age_public_key: String,
     pub auth_public_key: String,
     pub groups: Vec<String>,
-    #[serde(default)]
     pub enrolled_at: Option<String>,
 }
 

@@ -5,12 +5,13 @@ use axum::{
     extract::{ConnectInfo, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use sha2::{Digest, Sha256};
 
+use crate::admin;
 use crate::configure::ClientEntry;
 use crate::types::{
     AppState, EnrollPayload, EnrollRequest, EnrollResponse, ErrorResponse, HealthResponse,
@@ -24,6 +25,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/manifest", get(manifest_handler))
         .route("/api/v1/files/*path", get(file_handler))
         .route("/api/v1/enroll", post(enroll_handler))
+        // Admin endpoints
+        .route("/api/v1/admin/tokens", post(admin::admin_create_tokens))
+        .route("/api/v1/admin/tokens", get(admin::admin_list_tokens))
+        .route("/api/v1/admin/tokens/:client_id", delete(admin::admin_revoke_tokens))
         .with_state(state)
 }
 
@@ -392,12 +397,7 @@ async fn enroll_handler(
     // Mark token as used (only for token-based enrollment)
     if !skip_token {
         token_store.mark_used(&request.token_secret);
-        token_store.save(&state.token_store_path).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(e.to_string(), "SAVE_ERROR")),
-            )
-        })?;
+        // Token store is in-memory only, no persistence needed
     }
 
     // Add client to config

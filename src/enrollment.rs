@@ -2,31 +2,17 @@ use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::Path;
 
-/// Token storage file format
+/// In-memory token storage
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct TokenStore {
     pub tokens: Vec<TokenEntry>,
 }
 
 impl TokenStore {
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        if path.exists() {
-            let content = std::fs::read_to_string(path)?;
-            Ok(serde_json::from_str(&content)?)
-        } else {
-            Ok(Self::default())
-        }
-    }
-
-    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
-        Ok(())
+    /// Create a new empty token store
+    pub fn new() -> Self {
+        Self { tokens: Vec::new() }
     }
 
     /// Add a new token entry
