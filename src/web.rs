@@ -1,14 +1,13 @@
 use std::net::SocketAddr;
 
 use axum::{
-    Router,
+    Json, Router,
     extract::{ConnectInfo, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post},
-    Json,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use sha2::{Digest, Sha256};
 
 use crate::admin;
@@ -28,7 +27,10 @@ pub fn create_router(state: AppState) -> Router {
         // Admin endpoints
         .route("/api/v1/admin/tokens", post(admin::admin_create_tokens))
         .route("/api/v1/admin/tokens", get(admin::admin_list_tokens))
-        .route("/api/v1/admin/tokens/:client_id", delete(admin::admin_revoke_tokens))
+        .route(
+            "/api/v1/admin/tokens/:client_id",
+            delete(admin::admin_revoke_tokens),
+        )
         .with_state(state)
 }
 
@@ -71,8 +73,8 @@ async fn manifest_handler(
 
     // Sign the manifest
     let manifest_data = serde_json::to_vec(&entries).unwrap_or_default();
-    let (signature, _) = encryption::sign(&state.server_signing_key, &manifest_data)
-        .map_err(|e| {
+    let (signature, _) =
+        encryption::sign(&state.server_signing_key, &manifest_data).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(e.to_string(), "SIGN_ERROR")),
@@ -114,12 +116,15 @@ async fn file_handler(
 
     // Find the file
     let files = config.get_client_files(&client_id);
-    let file_info = files.iter().find(|f| f.relative_path == path).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse::new("File not found", "FILE_NOT_FOUND")),
-        )
-    })?;
+    let file_info = files
+        .iter()
+        .find(|f| f.relative_path == path)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("File not found", "FILE_NOT_FOUND")),
+            )
+        })?;
 
     // Read and encrypt the file
     let content = tokio::fs::read(&file_info.source_path).await.map_err(|e| {
@@ -142,8 +147,8 @@ async fn file_handler(
     let encrypted_bytes = encrypted.into_inner();
 
     // Sign the encrypted content
-    let (signature, timestamp) =
-        encryption::sign(&state.server_signing_key, &encrypted_bytes).map_err(|e| {
+    let (signature, timestamp) = encryption::sign(&state.server_signing_key, &encrypted_bytes)
+        .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(e.to_string(), "SIGN_ERROR")),
@@ -179,7 +184,10 @@ async fn authenticate_request(
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse::new("Missing X-Client-Id header", "MISSING_CLIENT_ID")),
+                Json(ErrorResponse::new(
+                    "Missing X-Client-Id header",
+                    "MISSING_CLIENT_ID",
+                )),
             )
         })?;
 
@@ -189,7 +197,10 @@ async fn authenticate_request(
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse::new("Missing X-Timestamp header", "MISSING_TIMESTAMP")),
+                Json(ErrorResponse::new(
+                    "Missing X-Timestamp header",
+                    "MISSING_TIMESTAMP",
+                )),
             )
         })?;
 
@@ -206,7 +217,10 @@ async fn authenticate_request(
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse::new("Missing X-Nonce header", "MISSING_NONCE")),
+                Json(ErrorResponse::new(
+                    "Missing X-Nonce header",
+                    "MISSING_NONCE",
+                )),
             )
         })?;
 
@@ -216,7 +230,10 @@ async fn authenticate_request(
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse::new("Missing Authorization header", "MISSING_AUTH")),
+                Json(ErrorResponse::new(
+                    "Missing Authorization header",
+                    "MISSING_AUTH",
+                )),
             )
         })?;
 
@@ -224,14 +241,20 @@ async fn authenticate_request(
     let signature_b64 = auth_header.strip_prefix("Age-Auth ").ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse::new("Invalid Authorization format", "INVALID_AUTH_FORMAT")),
+            Json(ErrorResponse::new(
+                "Invalid Authorization format",
+                "INVALID_AUTH_FORMAT",
+            )),
         )
     })?;
 
     let signature = BASE64.decode(signature_b64).map_err(|_| {
         (
             StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse::new("Invalid signature encoding", "INVALID_SIGNATURE")),
+            Json(ErrorResponse::new(
+                "Invalid signature encoding",
+                "INVALID_SIGNATURE",
+            )),
         )
     })?;
 
@@ -241,12 +264,18 @@ async fn authenticate_request(
     if (now - timestamp).abs() > window {
         return Err((
             StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse::new("Timestamp out of range", "TIMESTAMP_EXPIRED")),
+            Json(ErrorResponse::new(
+                "Timestamp out of range",
+                "TIMESTAMP_EXPIRED",
+            )),
         ));
     }
 
     // Check nonce hasn't been used
-    if !state.nonce_cache.check_and_mark(client_id, nonce, timestamp) {
+    if !state
+        .nonce_cache
+        .check_and_mark(client_id, nonce, timestamp)
+    {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse::new("Nonce already used", "NONCE_REUSED")),
@@ -258,7 +287,10 @@ async fn authenticate_request(
     let client = config.clients.get(client_id).ok_or_else(|| {
         (
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new("Client not registered", "CLIENT_NOT_FOUND")),
+            Json(ErrorResponse::new(
+                "Client not registered",
+                "CLIENT_NOT_FOUND",
+            )),
         )
     })?;
 
@@ -266,23 +298,33 @@ async fn authenticate_request(
     let verifying_key_bytes = BASE64.decode(&client.auth_public_key).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new("Invalid client key", "INVALID_CLIENT_KEY")),
+            Json(ErrorResponse::new(
+                "Invalid client key",
+                "INVALID_CLIENT_KEY",
+            )),
         )
     })?;
 
     let verifying_key_array: [u8; 32] = verifying_key_bytes.try_into().map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new("Invalid client key length", "INVALID_CLIENT_KEY")),
+            Json(ErrorResponse::new(
+                "Invalid client key length",
+                "INVALID_CLIENT_KEY",
+            )),
         )
     })?;
 
-    let verifying_key = encryption::VerifyingKey::from_bytes(&verifying_key_array).map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new("Invalid client key", "INVALID_CLIENT_KEY")),
-        )
-    })?;
+    let verifying_key =
+        encryption::VerifyingKey::from_bytes(&verifying_key_array).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    "Invalid client key",
+                    "INVALID_CLIENT_KEY",
+                )),
+            )
+        })?;
 
     // Reconstruct the signing payload
     // payload = client_id || "\n" || timestamp || "\n" || nonce
@@ -320,7 +362,10 @@ async fn enroll_handler(
     if !enrollment_config.enabled {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new("Enrollment is disabled", "ENROLLMENT_DISABLED")),
+            Json(ErrorResponse::new(
+                "Enrollment is disabled",
+                "ENROLLMENT_DISABLED",
+            )),
         ));
     }
 
@@ -358,7 +403,10 @@ async fn enroll_handler(
         let token_entry = token_store.validate(&request.token_secret).ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse::new("Invalid or expired token", "INVALID_TOKEN")),
+                Json(ErrorResponse::new(
+                    "Invalid or expired token",
+                    "INVALID_TOKEN",
+                )),
             )
         })?;
         (token_entry.client_id.clone(), token_entry.groups.clone())
@@ -368,16 +416,20 @@ async fn enroll_handler(
     let encrypted_payload = BASE64.decode(&request.encrypted_payload).map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new("Invalid payload encoding", "INVALID_PAYLOAD")),
+            Json(ErrorResponse::new(
+                "Invalid payload encoding",
+                "INVALID_PAYLOAD",
+            )),
         )
     })?;
 
-    let decrypted = encryption::decrypt(&state.server_age_identity, encrypted_payload).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(e.to_string(), "DECRYPT_ERROR")),
-        )
-    })?;
+    let decrypted =
+        encryption::decrypt(&state.server_age_identity, encrypted_payload).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(e.to_string(), "DECRYPT_ERROR")),
+            )
+        })?;
 
     let payload: EnrollPayload = serde_json::from_slice(&decrypted.into_inner()).map_err(|e| {
         (
@@ -390,7 +442,10 @@ async fn enroll_handler(
     if !payload.age_public_key.starts_with("age1") {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new("Invalid age public key format", "INVALID_AGE_KEY")),
+            Json(ErrorResponse::new(
+                "Invalid age public key format",
+                "INVALID_AGE_KEY",
+            )),
         ));
     }
 
@@ -411,18 +466,26 @@ async fn enroll_handler(
     // Update in-memory config
     {
         let mut config = state.config.write().await;
-        config.clients.insert(client_id.clone(), client_entry.clone());
+        config
+            .clients
+            .insert(client_id.clone(), client_entry.clone());
     }
 
     // Append to config file
-    append_client_to_config(&state.config_path, &client_id, &client_entry).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(e.to_string(), "CONFIG_WRITE_ERROR")),
-        )
-    })?;
+    append_client_to_config(&state.config_path, &client_id, &client_entry)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(e.to_string(), "CONFIG_WRITE_ERROR")),
+            )
+        })?;
 
-    log::info!("Enrolled new client: {} with groups: {:?}", client_id, groups);
+    log::info!(
+        "Enrolled new client: {} with groups: {:?}",
+        client_id,
+        groups
+    );
 
     Ok(Json(EnrollResponse { client_id, groups }))
 }

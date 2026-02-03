@@ -108,7 +108,6 @@ pub struct ManifestFileEntry {
     pub group: String,
 }
 
-
 /// Error response
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {

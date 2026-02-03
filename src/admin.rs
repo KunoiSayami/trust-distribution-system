@@ -1,13 +1,13 @@
 use axum::{
+    Json,
     extract::State,
     http::{HeaderMap, StatusCode},
-    Json,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 
 use crate::configure::AdminConfig;
-use crate::enrollment::{generate_token, TokenEntry};
+use crate::enrollment::{TokenEntry, generate_token};
 use crate::types::{AppState, ErrorResponse};
 
 /// Request to create enrollment tokens
@@ -77,8 +77,8 @@ fn validate_admin_auth(
     use totp_rs::{Algorithm, TOTP};
 
     // 1. Verify password with Argon2
-    let parsed_hash =
-        PasswordHash::new(&admin_config.password_hash).map_err(|_| "Invalid password hash in config")?;
+    let parsed_hash = PasswordHash::new(&admin_config.password_hash)
+        .map_err(|_| "Invalid password hash in config")?;
 
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed_hash)
@@ -106,14 +106,19 @@ fn validate_admin_auth(
 }
 
 /// Extract and validate admin auth from headers
-fn extract_admin_auth(headers: &HeaderMap) -> Result<(String, String), (StatusCode, Json<ErrorResponse>)> {
+fn extract_admin_auth(
+    headers: &HeaderMap,
+) -> Result<(String, String), (StatusCode, Json<ErrorResponse>)> {
     let auth_header = headers
         .get("Authorization")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse::new("Missing Authorization header", "MISSING_AUTH")),
+                Json(ErrorResponse::new(
+                    "Missing Authorization header",
+                    "MISSING_AUTH",
+                )),
             )
         })?;
 
@@ -133,7 +138,10 @@ fn extract_admin_auth(headers: &HeaderMap) -> Result<(String, String), (StatusCo
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse::new("Missing X-TOTP-Code header", "MISSING_TOTP")),
+                Json(ErrorResponse::new(
+                    "Missing X-TOTP-Code header",
+                    "MISSING_TOTP",
+                )),
             )
         })?;
 
@@ -283,8 +291,8 @@ pub fn generate_totp_code(secret: &str) -> anyhow::Result<String> {
 
 /// Generate Argon2id password hash (for CLI utility)
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
-    use argon2::password_hash::rand_core::OsRng;
     use argon2::password_hash::SaltString;
+    use argon2::password_hash::rand_core::OsRng;
     use argon2::{Argon2, PasswordHasher};
 
     let salt = SaltString::generate(&mut OsRng);

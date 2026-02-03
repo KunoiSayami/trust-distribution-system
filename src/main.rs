@@ -209,9 +209,7 @@ fn resolve_admin_credentials(
             Some(code) => code.clone(),
             None => {
                 let admin_config = config.server.admin.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No [server.admin] section in config; provide --totp manually"
-                    )
+                    anyhow::anyhow!("No [server.admin] section in config; provide --totp manually")
                 })?;
                 admin::generate_totp_code(&admin_config.totp_secret)?
             }
@@ -220,9 +218,9 @@ fn resolve_admin_credentials(
         (server_url, totp_code)
     } else {
         // No config - use server arg and require TOTP arg
-        let totp_code = totp_arg.clone().ok_or_else(|| {
-            anyhow::anyhow!("Either --config or --totp must be provided")
-        })?;
+        let totp_code = totp_arg
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Either --config or --totp must be provided"))?;
         (server_arg.to_string(), totp_code)
     };
 
