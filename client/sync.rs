@@ -24,13 +24,29 @@ pub struct ManifestFileEntry {
     pub content_hash: String,
     pub size: u64,
     pub group: String,
+    /// File modification timestamp (Unix seconds)
+    #[serde(default)]
+    pub modified_at: i64,
+}
+
+/// Tracked metadata for a synced file
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct FileMetadata {
+    /// Content hash from server (for verification)
+    pub content_hash: String,
+    /// Modification timestamp from server (Unix seconds)
+    pub modified_at: i64,
 }
 
 /// Persistent state for tracking downloaded files
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SyncState {
-    /// Map of file path -> content hash
+    /// Legacy: Map of file path -> content hash (for backward compatibility)
+    #[serde(default)]
     pub file_hashes: HashMap<String, String>,
+    /// Map of file path -> file metadata (modification time + hash)
+    #[serde(default)]
+    pub file_metadata: HashMap<String, FileMetadata>,
     /// Last successful sync timestamp
     pub last_sync: Option<i64>,
 }
@@ -163,7 +179,7 @@ impl TdsClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Server error {}: {}", status, body));
+            return Err(anyhow!("Server error {status}: {body}"));
         }
 
         // Get expected hash from header
@@ -204,9 +220,7 @@ impl TdsClient {
             let actual_hash = format!("sha256:{}", hex::encode(Sha256::digest(&plain_bytes)));
             if actual_hash != expected {
                 return Err(anyhow!(
-                    "Hash mismatch: expected {}, got {}",
-                    expected,
-                    actual_hash
+                    "Hash mismatch: expected {expected}, got {actual_hash}",
                 ));
             }
         }
@@ -230,10 +244,22 @@ pub fn files_to_download(
                 return false;
             }
 
-            // Check if hash has changed
-            match state.file_hashes.get(&file.path) {
-                Some(existing_hash) => existing_hash != &file.content_hash,
-                None => true, // New file
+            // Check if server's file metadata has changed since last sync
+            match state.file_metadata.get(&file.path) {
+                Some(existing) => {
+                    // Download if modification time changed (primary check)
+                    // or if hash changed (fallback for edge cases)
+                    existing.modified_at != file.modified_at
+                        || existing.content_hash != file.content_hash
+                }
+                None => {
+                    // New file, or migrating from old state format
+                    // Also check legacy file_hashes for migration scenario
+                    match state.file_hashes.get(&file.path) {
+                        Some(existing_hash) => existing_hash != &file.content_hash,
+                        None => true, // Truly new file
+                    }
+                }
             }
         })
         .cloned()

@@ -106,6 +106,8 @@ pub struct ManifestFileEntry {
     pub content_hash: String,
     pub size: u64,
     pub group: String,
+    /// File modification timestamp (Unix seconds)
+    pub modified_at: i64,
 }
 
 /// Error response

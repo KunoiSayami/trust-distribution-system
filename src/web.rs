@@ -58,6 +58,25 @@ async fn manifest_handler(
     // Build manifest entries
     let mut entries = Vec::new();
     for file_info in files {
+        // Read file metadata for modification time
+        let metadata = match tokio::fs::metadata(&file_info.source_path).await {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!(
+                    "Failed to read metadata for {}: {e}",
+                    file_info.source_path.display()
+                );
+                continue;
+            }
+        };
+
+        let modified_at = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
         if let Ok(content) = tokio::fs::read(&file_info.source_path).await {
             let hash = format!("sha256:{}", hex::encode(Sha256::digest(&content)));
             entries.push(ManifestFileEntry {
@@ -65,6 +84,7 @@ async fn manifest_handler(
                 content_hash: hash,
                 size: content.len() as u64,
                 group: file_info.group,
+                modified_at,
             });
         }
     }

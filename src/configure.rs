@@ -30,28 +30,36 @@ impl ServerConfig {
         let mut files = Vec::new();
         for group_name in &client.groups {
             if let Some(group) = self.groups.get(group_name) {
-                // Add individual files
-                for file_path in &group.files {
-                    if let Some(file_name) = PathBuf::from(file_path).file_name() {
-                        files.push(FileInfo {
-                            source_path: PathBuf::from(file_path),
-                            relative_path: file_name.to_string_lossy().to_string(),
-                            group: group_name.clone(),
-                        });
-                    }
-                }
+                for path_str in &group.paths {
+                    let path = PathBuf::from(path_str);
 
-                // Add directory contents
-                for dir_path in &group.directories {
-                    if let Ok(entries) = Self::scan_directory(dir_path) {
-                        for (source, relative) in entries {
+                    // Auto-detect: check if path is directory or file
+                    if path.is_dir() {
+                        // Scan directory recursively
+                        if let Ok(entries) = Self::scan_directory(path_str) {
+                            for (source, relative) in entries {
+                                files.push(FileInfo {
+                                    source_path: source,
+                                    relative_path: relative,
+                                    group: group_name.clone(),
+                                });
+                            }
+                        }
+                    } else if path.is_file() {
+                        // Single file
+                        let relative_path = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if !relative_path.is_empty() {
                             files.push(FileInfo {
-                                source_path: source,
-                                relative_path: relative,
+                                source_path: path,
+                                relative_path,
                                 group: group_name.clone(),
                             });
                         }
                     }
+                    // Skip non-existent paths silently
                 }
             }
         }
@@ -173,10 +181,9 @@ pub struct ClientEntry {
 pub struct GroupConfig {
     #[allow(unused)]
     pub description: Option<String>,
+    /// Paths to files or directories (auto-detected)
     #[serde(default)]
-    pub files: Vec<String>,
-    #[serde(default)]
-    pub directories: Vec<String>,
+    pub paths: Vec<String>,
 }
 
 /// File info for serving
@@ -209,8 +216,7 @@ auth_public_key = "base64key"
 groups = ["production"]
 
 [groups.production]
-files = ["/etc/certs/ca.pem"]
-directories = ["/etc/letsencrypt/live/example.com"]
+paths = ["/etc/certs/ca.pem", "/etc/letsencrypt/live/example.com"]
 "#;
 
         let config: ServerConfig = toml::from_str(config_str).unwrap();

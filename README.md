@@ -35,9 +35,25 @@ version = 1
 [server]
 bind = "127.0.0.1:8080"
 
+# Optional: TLS config (if not using reverse proxy)
+# [server.tls]
+# cert_path = "/etc/tds/cert.pem"
+# key_path = "/etc/tds/key.pem"
+
 [server.keys]
 signing_key_path = "/etc/tds/server_signing.key"
 age_identity_path = "/etc/tds/server.age"
+
+# Admin credentials for token management (generate with hash-password and totp-setup)
+[server.admin]
+password_hash = "$argon2id$..."   # from: server hash-password <password>
+totp_secret = "BASE32SECRET"      # from: server totp-setup --account admin
+
+# Enrollment settings
+[server.enrollment]
+enabled = true           # Enable enrollment endpoint (default: true)
+token_expiry_hours = 1   # Default token lifetime in hours
+allow_localhost = false  # Allow token-free enrollment from localhost (dev only)
 
 # Define file groups
 [groups.production]
@@ -66,8 +82,16 @@ cargo run --bin server -- -c /etc/tds/server.toml server
 
 ### 4. Generate Enrollment Token
 
+With the server running, generate a token using admin credentials:
+
 ```bash
-cargo run --bin server -- -c /etc/tds/server.toml token new \
+# Using config file (auto-reads TOTP secret if configured)
+cargo run --bin server -- token -c /etc/tds/server.toml -p <admin-password> new \
+  --client-id "web-01" \
+  --groups "production,web-servers"
+
+# Or specify server URL and TOTP manually
+cargo run --bin server -- token -s http://127.0.0.1:8080 -p <admin-password> -t <totp-code> new \
   --client-id "web-01" \
   --groups "production,web-servers"
 ```
@@ -179,20 +203,37 @@ cargo run --bin client -- -c /etc/tds-client/client.toml run
 
 ## HTTP API
 
+### Client Endpoints
+
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | GET | `/api/v1/health` | No | Health check |
-| GET | `/api/v1/manifest` | Yes | Get file list with hashes |
-| GET | `/api/v1/files/{path}` | Yes | Download encrypted file |
+| GET | `/api/v1/manifest` | Client | Get file list with hashes |
+| GET | `/api/v1/files/{path}` | Client | Download encrypted file |
 | POST | `/api/v1/enroll` | Token | Client enrollment |
 
-### Authentication Headers
+### Admin Endpoints
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/api/v1/admin/tokens` | Admin | Create enrollment tokens |
+| GET | `/api/v1/admin/tokens` | Admin | List pending tokens |
+| DELETE | `/api/v1/admin/tokens/{client_id}` | Admin | Revoke tokens for client |
+
+### Client Authentication Headers
 
 ```
 Authorization: Age-Auth <ed25519_signature>
 X-Client-Id: client-alpha
 X-Timestamp: 1706745600000
 X-Nonce: random_base64
+```
+
+### Admin Authentication Headers
+
+```
+Authorization: Admin <password>
+X-TOTP-Code: 123456
 ```
 
 ## Deployment with Nginx
@@ -258,10 +299,16 @@ server -c server.toml server
 # Generate server keys
 server keygen -o /etc/tds/
 
-# Token management
-server -c server.toml token new --client-id "web-01" --groups "production,web-servers"
-server -c server.toml token list
-server -c server.toml token revoke --client-id "web-01"
+# Token management (via HTTP to running server, requires admin credentials)
+server token -p <password> [-s <server>] [-c <config>] [-t <totp>] new \
+  --client-id "web-01" --groups "production,web-servers" [--count <n>] [--expiry <hours>]
+server token -p <password> [-s <server>] [-c <config>] [-t <totp>] list
+server token -p <password> [-s <server>] [-c <config>] [-t <totp>] revoke --client-id "web-01"
+
+# Utility commands for admin setup
+server hash-password <password>              # Generate Argon2id hash for config
+server totp-setup --account <name>           # Generate new TOTP secret
+server totp <secret>                         # Generate current TOTP code
 ```
 
 ### Client Commands
@@ -287,9 +334,11 @@ client enroll --server "https://server:8443" --token "tds-enroll-v1:..." --confi
 
 - **Encryption**: Files encrypted using age (X25519) per-client
 - **Signing**: Server signs all files with Ed25519; clients verify signatures
-- **Authentication**: Clients sign requests with Ed25519; includes timestamp and nonce
+- **Client authentication**: Clients sign requests with Ed25519; includes timestamp and nonce
+- **Admin authentication**: Password (Argon2id hash) + TOTP two-factor for token management
 - **Replay protection**: Nonce cache prevents request replay within 5-minute window
 - **Token security**: Enrollment tokens are one-time use, expire after 1 hour by default
+- **Localhost bypass**: Optional development mode to skip token validation for local connections
 
 ## Building
 

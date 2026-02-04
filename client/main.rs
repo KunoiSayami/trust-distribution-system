@@ -159,7 +159,15 @@ async fn sync_once(
                 tokio::fs::write(&output_path, &content).await?;
                 log::info!("Wrote {} ({} bytes)", output_path.display(), content.len());
 
-                // Update state
+                // Update state with new metadata format
+                state.file_metadata.insert(
+                    file.path.clone(),
+                    sync::FileMetadata {
+                        content_hash: file.content_hash.clone(),
+                        modified_at: file.modified_at,
+                    },
+                );
+                // Also update legacy field for backward compatibility
                 state
                     .file_hashes
                     .insert(file.path.clone(), file.content_hash.clone());
