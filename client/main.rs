@@ -174,7 +174,7 @@ async fn sync_once(
                 downloaded_files.push(file.clone());
             }
             Err(e) => {
-                log::error!("Failed to download {}: {}", file.path, e);
+                log::error!("Failed to download {}: {e}", file.path);
             }
         }
     }
@@ -209,8 +209,8 @@ async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
     encryption::async_fn::write_verifying_key(&verifying_key_path, &signing_key.verifying_key())
         .await?;
 
-    log::info!("Wrote signing key to {:?}", signing_key_path);
-    log::info!("Wrote verifying key to {:?}", verifying_key_path);
+    log::info!("Wrote signing key to {signing_key_path:?}");
+    log::info!("Wrote verifying key to {verifying_key_path:?}");
 
     // Generate age identity
     let age_identity = encryption::AgeIdentity::generate();

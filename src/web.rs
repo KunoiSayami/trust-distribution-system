@@ -501,11 +501,7 @@ async fn enroll_handler(
             )
         })?;
 
-    log::info!(
-        "Enrolled new client: {} with groups: {:?}",
-        client_id,
-        groups
-    );
+    log::info!("Enrolled new client: {client_id} with groups: {groups:?}",);
 
     Ok(Json(EnrollResponse { client_id, groups }))
 }
@@ -522,14 +518,13 @@ async fn append_client_to_config(
         r#"
 
 # Auto-added by enrollment at {}
-[clients.{}]
+[clients.{client_id}]
 age_public_key = "{}"
 auth_public_key = "{}"
 groups = {:?}
 enrolled_at = "{}"
 "#,
         entry.enrolled_at.as_ref().unwrap_or(&String::new()),
-        client_id,
         entry.age_public_key,
         entry.auth_public_key,
         entry.groups,
@@ -554,7 +549,7 @@ pub async fn run_server(state: AppState, bind: &str) -> anyhow::Result<()> {
         .await
         .inspect_err(|e| log::error!("Web server bind error: {e:?}"))?;
 
-    log::info!("Server listening on {}", bind);
+    log::info!("Server listening on {bind}");
 
     axum::serve(
         listener,

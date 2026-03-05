@@ -300,7 +300,7 @@ pub fn hash_password(password: &str) -> anyhow::Result<String> {
 
     let hash = argon2
         .hash_password(password.as_bytes(), &salt)
-        .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to hash password: {e:?}"))?;
 
     Ok(hash.to_string())
 }

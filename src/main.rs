@@ -104,7 +104,7 @@ enum TokenAction {
 }
 
 async fn run_server(config_path: PathBuf) -> anyhow::Result<()> {
-    log::info!("Loading configuration from {:?}", config_path);
+    log::info!("Loading configuration from {config_path:?}");
     let config = ServerConfig::load(&config_path)?;
 
     log::info!("Loading server keys...");
@@ -165,8 +165,8 @@ async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
     encryption::async_fn::write_verifying_key(&verifying_key_path, &signing_key.verifying_key())
         .await?;
 
-    log::info!("Wrote signing key to {:?}", signing_key_path);
-    log::info!("Wrote verifying key to {:?}", verifying_key_path);
+    log::info!("Wrote signing key to {signing_key_path:?}");
+    log::info!("Wrote verifying key to {verifying_key_path:?}");
 
     // Generate age identity
     let age_identity = encryption::AgeIdentity::generate();
@@ -174,15 +174,15 @@ async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
 
     encryption::async_fn::write_age_identity(&age_identity_path, &age_identity).await?;
 
-    log::info!("Wrote age identity to {:?}", age_identity_path);
+    log::info!("Wrote age identity to {age_identity_path:?}");
     log::info!(
         "Server age recipient (share with clients): {}",
         age_identity.to_recipient().to_string()
     );
 
     println!("\nServer keys generated successfully!");
-    println!("Signing key: {:?}", signing_key_path);
-    println!("Age identity: {:?}", age_identity_path);
+    println!("Signing key: {signing_key_path:?}");
+    println!("Age identity: {age_identity_path:?}");
     println!(
         "\nAge recipient (for client config): {}",
         age_identity.to_recipient().to_string()
@@ -321,8 +321,8 @@ async fn token_command(
         }
         TokenAction::Revoke { client_id } => {
             let response = client
-                .delete(format!("{}/api/v1/admin/tokens/{}", server_url, client_id))
-                .header("Authorization", format!("Admin {}", password))
+                .delete(format!("{server_url}/api/v1/admin/tokens/{client_id}"))
+                .header("Authorization", format!("Admin {password}"))
                 .header("X-TOTP-Code", &totp_code)
                 .send()
                 .await?;
@@ -330,7 +330,7 @@ async fn token_command(
             if response.status().is_success() {
                 println!("Token(s) for '{}' revoked.", client_id);
             } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-                println!("No pending token found for '{}'.", client_id);
+                println!("No pending token found for '{client_id}'.");
             } else {
                 let error: serde_json::Value = response.json().await?;
                 anyhow::bail!("Failed to revoke token: {}", error["error"]);
@@ -343,13 +343,13 @@ async fn token_command(
 
 fn totp_command(secret: &str) -> anyhow::Result<()> {
     let code = admin::generate_totp_code(secret)?;
-    println!("{}", code);
+    println!("{code}");
     Ok(())
 }
 
 fn hash_password_command(password: &str) -> anyhow::Result<()> {
     let hash = admin::hash_password(password)?;
-    println!("{}", hash);
+    println!("{hash}");
     Ok(())
 }
 
@@ -358,19 +358,18 @@ fn totp_setup_command(account: &str, issuer: &str) -> anyhow::Result<()> {
 
     // Generate otpauth URL for QR code
     let otpauth_url = format!(
-        "otpauth://totp/{}:{}?secret={}&issuer={}&algorithm=SHA1&digits=6&period=30",
-        issuer, account, secret, issuer
+        "otpauth://totp/{issuer}:{account}?secret={secret}&issuer={issuer}&algorithm=SHA1&digits=6&period=30",
     );
 
-    println!("TOTP Setup for {}", account);
+    println!("TOTP Setup for {account}");
     println!("{}", "=".repeat(50));
     println!("\nSecret (for server.toml [server.admin] section):");
-    println!("  totp_secret = \"{}\"", secret);
+    println!("  totp_secret = \"{secret}\"");
     println!("\nOTPAuth URL (for QR code generators):");
-    println!("  {}", otpauth_url);
+    println!("  {otpauth_url}");
     println!("\nManual entry in authenticator app:");
-    println!("  Account: {}:{}", issuer, account);
-    println!("  Secret: {}", secret);
+    println!("  Account: {issuer}:{account}");
+    println!("  Secret: {secret}");
     println!("  Type: Time-based");
     println!("  Algorithm: SHA1");
     println!("  Digits: 6");

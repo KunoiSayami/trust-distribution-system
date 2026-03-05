@@ -28,9 +28,9 @@ pub fn execute_actions(
     for group in changed_groups {
         if let Some(action) = config.actions.groups.get(group) {
             if action.on_change_only {
-                log::info!("Running group action for {}", group);
+                log::info!("Running group action for {group}");
                 run_action(action)
-                    .with_context(|| format!("Failed to run action for group {}", group))?;
+                    .with_context(|| format!("Failed to run action for group {group}"))?;
             }
         }
     }
@@ -43,14 +43,14 @@ pub fn execute_actions(
 pub fn execute_all_actions(config: &ClientConfig) -> anyhow::Result<()> {
     // Execute all group actions
     for (group, action) in &config.actions.groups {
-        log::info!("Running group action for {}", group);
-        run_action(action).with_context(|| format!("Failed to run action for group {}", group))?;
+        log::info!("Running group action for {group}");
+        run_action(action).with_context(|| format!("Failed to run action for group {group}"))?;
     }
 
     // Execute all file actions
     for (file, action) in &config.actions.files {
-        log::info!("Running file action for {}", file);
-        run_action(action).with_context(|| format!("Failed to run action for file {}", file))?;
+        log::info!("Running file action for {file}");
+        run_action(action).with_context(|| format!("Failed to run action for file {file}"))?;
     }
 
     Ok(())
@@ -63,11 +63,7 @@ fn run_action(action: &ActionConfig) -> anyhow::Result<()> {
         .with_context(|| format!("Failed to execute command: {}", action.command))?;
 
     if !status.success() {
-        anyhow::bail!(
-            "Command '{}' exited with status: {}",
-            action.command,
-            status
-        );
+        anyhow::bail!("Command '{}' exited with status: {status}", action.command);
     }
 
     Ok(())
