@@ -1,5 +1,4 @@
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -113,7 +112,7 @@ pub fn generate_token(
     expiry_hours: u32,
 ) -> (String, TokenEntry) {
     // Generate random secret
-    let secret: [u8; 32] = rand::thread_rng().r#gen();
+    let secret: [u8; 32] = rand::random();
     let secret_b64 = BASE64.encode(secret);
 
     // Create the full token string

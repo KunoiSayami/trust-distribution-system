@@ -22,13 +22,13 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/health", get(health_handler))
         .route("/api/v1/manifest", get(manifest_handler))
-        .route("/api/v1/files/*path", get(file_handler))
+        .route("/api/v1/files/{*path}", get(file_handler))
         .route("/api/v1/enroll", post(enroll_handler))
         // Admin endpoints
         .route("/api/v1/admin/tokens", post(admin::admin_create_tokens))
         .route("/api/v1/admin/tokens", get(admin::admin_list_tokens))
         .route(
-            "/api/v1/admin/tokens/:client_id",
+            "/api/v1/admin/tokens/{client_id}",
             delete(admin::admin_revoke_tokens),
         )
         .with_state(state)

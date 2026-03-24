@@ -307,7 +307,6 @@ pub fn hash_password(password: &str) -> anyhow::Result<String> {
 
 /// Generate new TOTP secret for setup (for CLI utility)
 pub fn generate_totp_secret() -> String {
-    use rand::Rng;
-    let secret: [u8; 20] = rand::thread_rng().r#gen();
+    let secret: [u8; 20] = rand::random();
     data_encoding::BASE32_NOPAD.encode(&secret)
 }
