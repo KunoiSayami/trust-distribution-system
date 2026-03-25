@@ -106,6 +106,7 @@ enum TokenAction {
 async fn run_server(config_path: PathBuf) -> anyhow::Result<()> {
     log::info!("Loading configuration from {config_path:?}");
     let config = ServerConfig::load(&config_path)?;
+    config.validate()?;
 
     log::info!("Loading server keys...");
     let signing_key =

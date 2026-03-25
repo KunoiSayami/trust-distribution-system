@@ -1,5 +1,7 @@
+use anyhow::Context;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 /// Server configuration
@@ -19,6 +21,83 @@ impl ServerConfig {
         let content = std::fs::read_to_string(path)?;
         let config: ServerConfig = toml::from_str(&content)?;
         Ok(config)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        // Version
+        if self.version != 1 {
+            anyhow::bail!(
+                "Unsupported config version {}; only version 1 is supported",
+                self.version
+            );
+        }
+
+        // Bind address must be a valid socket address
+        let bind = &self.server.bind;
+        bind.parse::<SocketAddr>()
+            .with_context(|| format!("Invalid bind address {bind:?}"))?;
+
+        // Key files must exist and be readable
+        check_file_readable(&self.server.keys.signing_key_path, "signing_key_path")?;
+        check_file_readable(&self.server.keys.age_identity_path, "age_identity_path")?;
+
+        // Admin config (if present): validate password_hash and totp_secret are parseable
+        if let Some(admin) = &self.server.admin {
+            argon2::PasswordHash::new(&admin.password_hash)
+                .map_err(|e| anyhow::anyhow!("Invalid admin password_hash: {e}"))?;
+            data_encoding::BASE32_NOPAD
+                .decode(admin.totp_secret.to_uppercase().as_bytes())
+                .map_err(|e| anyhow::anyhow!("Invalid admin totp_secret: {e}"))?;
+        }
+
+        // Enrollment token expiry must be > 0
+        if self.server.enrollment.token_expiry_hours == 0 {
+            anyhow::bail!("enrollment.token_expiry_hours must be greater than 0");
+        }
+
+        // TLS file existence + readability (if configured)
+        if let Some(tls) = &self.server.tls {
+            check_file_readable(&tls.cert_path, "TLS cert_path")?;
+            check_file_readable(&tls.key_path, "TLS key_path")?;
+        }
+
+        // Client auth_public_key: must be valid base64 decoding to 32 bytes (Ed25519)
+        use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+        for (client_id, client) in &self.clients {
+            let key_bytes = BASE64.decode(&client.auth_public_key).with_context(|| {
+                format!("Client {client_id:?}: auth_public_key is not valid base64")
+            })?;
+            if key_bytes.len() != 32 {
+                anyhow::bail!(
+                    "Client {client_id:?}: auth_public_key must decode to 32 bytes (got {})",
+                    key_bytes.len()
+                );
+            }
+        }
+
+        // Client group references: every group a client references must exist
+        for (client_id, client) in &self.clients {
+            for group in &client.groups {
+                if !self.groups.contains_key(group) {
+                    anyhow::bail!("Client {client_id:?} references unknown group {group:?}");
+                }
+            }
+        }
+
+        // Group paths: each configured path must exist and files must be readable
+        for (group_name, group) in &self.groups {
+            for path_str in &group.paths {
+                let path = std::path::Path::new(path_str);
+                if !path.exists() {
+                    anyhow::bail!("Group {group_name:?} path does not exist: {path:?}");
+                }
+                if path.is_file() {
+                    check_file_readable(path, &format!("Group {group_name:?} path"))?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Get all files available for a specific client
@@ -97,7 +176,6 @@ impl ServerConfig {
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServerSettings {
     pub bind: String,
-    #[allow(unused)]
     pub tls: Option<TlsConfig>,
     #[allow(unused)]
     pub proxy: Option<ProxyConfig>,
@@ -117,7 +195,6 @@ pub struct AdminConfig {
     pub totp_secret: String,
 }
 
-#[allow(unused)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct TlsConfig {
     pub cert_path: PathBuf,
@@ -157,6 +234,11 @@ impl Default for EnrollmentConfig {
             allow_localhost: false,
         }
     }
+}
+
+fn check_file_readable(path: &std::path::Path, label: &str) -> anyhow::Result<()> {
+    std::fs::File::open(path).with_context(|| format!("{label} is not readable: {path:?}"))?;
+    Ok(())
 }
 
 fn default_true() -> bool {

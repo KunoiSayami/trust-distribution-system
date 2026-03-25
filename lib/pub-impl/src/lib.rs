@@ -74,3 +74,24 @@ impl ParsedToken {
         )
     }
 }
+
+pub fn init_log(verbose: u8) {
+    let mut builder = env_logger::Builder::from_default_env();
+
+    if verbose > 4 {
+        builder.filter_module("h2::proto", log::LevelFilter::Warn);
+    }
+
+    if verbose > 3 {
+        builder.filter_module("h2::codec", log::LevelFilter::Warn);
+    }
+
+    if verbose > 2 {
+        builder.filter_module("hyper_util::client", log::LevelFilter::Warn);
+    }
+    if verbose > 1 {
+        builder.filter_module("reqwest::connect", log::LevelFilter::Warn);
+    }
+
+    builder.init();
+}

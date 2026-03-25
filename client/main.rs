@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use clap::{Parser, Subcommand};
-use pub_impl::{EnrollPayload, EnrollRequest, EnrollResponse, ParsedToken};
+use pub_impl::{EnrollPayload, EnrollRequest, EnrollResponse, ParsedToken, init_log};
 
 mod actions;
 mod config;
@@ -22,6 +22,10 @@ struct Cli {
     /// Configuration file path
     #[arg(short, long, default_value = "client.toml")]
     config: PathBuf,
+
+    /// Increase log verbosity (use multiple times for more detail)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 #[derive(Subcommand)]
@@ -357,9 +361,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_default_env().init();
-
     let cli = Cli::parse();
+
+    init_log(cli.verbose);
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
