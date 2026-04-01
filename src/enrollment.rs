@@ -107,7 +107,7 @@ pub fn hash_secret(secret: &str) -> String {
 pub fn generate_token(
     client_id: &str,
     groups: &[String],
-    server_age_recipient: &str,
+    server_x25519_recipient: &str,
     server_verify_key: &str,
     expiry_hours: u32,
 ) -> (String, TokenEntry) {
@@ -116,9 +116,10 @@ pub fn generate_token(
     let secret_b64 = BASE64.encode(secret);
 
     // Create the full token string
-    let token = format!(
-        "tds-enroll-v1:{}:{}:{}",
-        secret_b64, server_age_recipient, server_verify_key
+    let token = pub_impl::ParsedToken::to_token_string(
+        &secret_b64,
+        server_x25519_recipient,
+        server_verify_key,
     );
 
     let now = chrono::Utc::now();
@@ -152,13 +153,13 @@ mod tests {
             1,
         );
 
-        assert!(token.starts_with("tds-enroll-v1:"));
+        assert!(token.starts_with("tds-enroll-v2:"));
         assert_eq!(entry.client_id, "test-client");
         assert!(!entry.used);
         assert!(!entry.is_expired());
 
         let parsed = ParsedToken::parse(&token).unwrap();
-        assert_eq!(parsed.server_age_recipient, "age1recipient...");
+        assert_eq!(parsed.server_x25519_recipient, "age1recipient...");
         assert_eq!(parsed.server_verify_key, "base64verifykey");
 
         // Verify hash matches

@@ -1,21 +1,38 @@
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_VERSION: u64 = 2;
+pub const CHUNK_SIZE: usize = 1_048_576; // 1 MB
+pub const CURRENT_VERSION: u64 = 3;
+
+/// Chunked AES-256-GCM encrypted content
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ChunkedEncrypted {
+    /// Sender's ephemeral X25519 public key (32 bytes)
+    pub ephemeral_public_key: Vec<u8>,
+    /// Per-file random nonce (12 bytes)
+    pub file_nonce: Vec<u8>,
+    /// Total number of chunks
+    pub chunk_count: u64,
+    /// AES-256-GCM ciphertext per chunk (includes 16-byte GCM tag)
+    pub chunks: Vec<Vec<u8>>,
+}
 
 /// File content wrapper for transmission
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum Content {
-    /// Age-encrypted content
+    /// Legacy Age-encrypted content (kept for CBOR format compatibility)
     Encrypted(Vec<u8>),
     /// Unencrypted content
     Plain(Vec<u8>),
+    /// AES-256-GCM chunked encrypted content
+    ChunkedEncrypted(ChunkedEncrypted),
 }
 
 impl Content {
     pub fn len(&self) -> usize {
         match self {
             Content::Encrypted(items) | Content::Plain(items) => items.len(),
+            Content::ChunkedEncrypted(c) => c.chunks.iter().map(|ch| ch.len()).sum(),
         }
     }
 
@@ -27,43 +44,55 @@ impl Content {
         minicbor_serde::to_vec(&self).unwrap()
     }
 
+    pub fn from_cbor(data: &[u8]) -> anyhow::Result<Self> {
+        Ok(minicbor_serde::from_slice(data)?)
+    }
+
     pub fn is_encrypted(&self) -> bool {
-        matches!(self, Content::Encrypted(_))
+        matches!(self, Content::Encrypted(_) | Content::ChunkedEncrypted(_))
     }
 
     pub fn plain(self) -> Option<Vec<u8>> {
         match self {
-            Self::Encrypted(_) => None,
             Self::Plain(v) => Some(v),
+            _ => None,
         }
     }
 
     pub fn encrypted(self) -> Option<Vec<u8>> {
         match self {
             Self::Encrypted(v) => Some(v),
-            Self::Plain(_) => None,
+            _ => None,
+        }
+    }
+
+    pub fn chunked(self) -> Option<ChunkedEncrypted> {
+        match self {
+            Self::ChunkedEncrypted(c) => Some(c),
+            _ => None,
         }
     }
 
     pub fn into_inner(self) -> Vec<u8> {
         match self {
             Self::Encrypted(v) | Self::Plain(v) => v,
+            Self::ChunkedEncrypted(_) => panic!("into_inner called on ChunkedEncrypted"),
         }
     }
 }
 
 impl std::fmt::Display for Content {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}(length: {})",
-            if self.is_encrypted() {
-                "Encrypted"
-            } else {
-                "Plain"
-            },
-            self.len()
-        )
+        match self {
+            Self::Encrypted(_) => write!(f, "Encrypted(length: {})", self.len()),
+            Self::Plain(_) => write!(f, "Plain(length: {})", self.len()),
+            Self::ChunkedEncrypted(c) => write!(
+                f,
+                "ChunkedEncrypted(chunks: {}, total: {})",
+                c.chunk_count,
+                self.len()
+            ),
+        }
     }
 }
 
@@ -253,81 +282,90 @@ impl RawVerifyingKey {
     }
 }
 
-/// Age encryption identity (private key for decryption)
+/// X25519 private key for decryption (persistent, stored on disk)
 #[derive(Clone)]
-pub struct AgeIdentity {
-    inner: age::x25519::Identity,
+pub struct X25519Identity {
+    secret: x25519_dalek::StaticSecret,
+    public: x25519_dalek::PublicKey,
 }
 
-impl AgeIdentity {
+impl X25519Identity {
     pub fn generate() -> Self {
-        Self {
-            inner: age::x25519::Identity::generate(),
-        }
+        use rand::rngs::OsRng;
+        let secret = x25519_dalek::StaticSecret::random_from_rng(OsRng);
+        let public = x25519_dalek::PublicKey::from(&secret);
+        Self { secret, public }
     }
 
-    /// Parse from age identity string (AGE-SECRET-KEY-1...)
+    /// Parse from stored string: "X25519-SECRET-KEY-1:<lowercase hex of 32 bytes>"
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
-        let inner: age::x25519::Identity = s
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid age identity string"))?;
-        Ok(Self { inner })
+        let hex_part = s
+            .strip_prefix("X25519-SECRET-KEY-1:")
+            .ok_or_else(|| anyhow::anyhow!("Invalid X25519 identity string (expected X25519-SECRET-KEY-1: prefix)"))?;
+        let bytes = hex::decode(hex_part)
+            .map_err(|_| anyhow::anyhow!("Invalid hex in X25519 identity"))?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("X25519 secret key must be 32 bytes"))?;
+        let secret = x25519_dalek::StaticSecret::from(bytes);
+        let public = x25519_dalek::PublicKey::from(&secret);
+        Ok(Self { secret, public })
     }
 
-    /// Convert to age identity string
+    /// Serialize to stored string: "X25519-SECRET-KEY-1:<lowercase hex>"
     pub fn to_string(&self) -> String {
-        use age::secrecy::ExposeSecret;
-        self.inner.to_string().expose_secret().to_string()
+        format!("X25519-SECRET-KEY-1:{}", hex::encode(self.secret.as_bytes()))
     }
 
     /// Get the public recipient for this identity
-    pub fn to_recipient(&self) -> AgeRecipient {
-        AgeRecipient {
-            inner: self.inner.to_public(),
-        }
+    pub fn to_recipient(&self) -> X25519Recipient {
+        X25519Recipient(self.public)
     }
 
-    pub(crate) fn inner(&self) -> &age::x25519::Identity {
-        &self.inner
+    pub(crate) fn secret(&self) -> &x25519_dalek::StaticSecret {
+        &self.secret
     }
 }
 
-impl std::fmt::Debug for AgeIdentity {
+impl std::fmt::Debug for X25519Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgeIdentity")
+        f.debug_struct("X25519Identity")
             .field("recipient", &self.to_recipient())
             .finish_non_exhaustive()
     }
 }
 
-/// Age recipient (public key for encryption)
+/// X25519 public key for encryption
 #[derive(Clone)]
-pub struct AgeRecipient {
-    inner: age::x25519::Recipient,
-}
+pub struct X25519Recipient(x25519_dalek::PublicKey);
 
-impl AgeRecipient {
-    /// Parse from age recipient string (age1...)
+impl X25519Recipient {
+    /// Parse from stored string: "X25519-PUBLIC-KEY-1:<lowercase hex of 32 bytes>"
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
-        let inner: age::x25519::Recipient = s
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid age recipient string"))?;
-        Ok(Self { inner })
+        let hex_part = s
+            .strip_prefix("X25519-PUBLIC-KEY-1:")
+            .ok_or_else(|| anyhow::anyhow!("Invalid X25519 recipient string (expected X25519-PUBLIC-KEY-1: prefix)"))?;
+        let bytes = hex::decode(hex_part)
+            .map_err(|_| anyhow::anyhow!("Invalid hex in X25519 recipient"))?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("X25519 public key must be 32 bytes"))?;
+        Ok(Self(x25519_dalek::PublicKey::from(bytes)))
     }
 
-    /// Convert to age recipient string
+    /// Serialize to stored string: "X25519-PUBLIC-KEY-1:<lowercase hex>"
     pub fn to_string(&self) -> String {
-        self.inner.to_string()
+        format!("X25519-PUBLIC-KEY-1:{}", hex::encode(self.0.as_bytes()))
     }
 
-    pub(crate) fn inner(&self) -> &age::x25519::Recipient {
-        &self.inner
+    pub(crate) fn public_key(&self) -> &x25519_dalek::PublicKey {
+        &self.0
     }
 }
 
-impl std::fmt::Debug for AgeRecipient {
+impl std::fmt::Debug for X25519Recipient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgeRecipient")
+        f.debug_struct("X25519Recipient")
             .field("key", &self.to_string())
             .finish()
     }
@@ -340,32 +378,32 @@ pub struct KeyStore {
     pub signing_key: Option<SigningKey>,
     /// Ed25519 verifying key (for verifying signatures)
     pub verifying_key: VerifyingKey,
-    /// Age identity (for decryption)
-    pub age_identity: Option<AgeIdentity>,
-    /// Age recipient (for encryption)
-    pub age_recipient: AgeRecipient,
+    /// X25519 identity (for decryption)
+    pub x25519_identity: Option<X25519Identity>,
+    /// X25519 recipient (for encryption)
+    pub x25519_recipient: X25519Recipient,
 }
 
 impl KeyStore {
     /// Create a new KeyStore with all keys
-    pub fn new(signing_key: SigningKey, age_identity: AgeIdentity) -> Self {
+    pub fn new(signing_key: SigningKey, x25519_identity: X25519Identity) -> Self {
         let verifying_key = signing_key.verifying_key();
-        let age_recipient = age_identity.to_recipient();
+        let x25519_recipient = x25519_identity.to_recipient();
         Self {
             signing_key: Some(signing_key),
             verifying_key,
-            age_identity: Some(age_identity),
-            age_recipient,
+            x25519_identity: Some(x25519_identity),
+            x25519_recipient,
         }
     }
 
     /// Create a public-only KeyStore (for storing other party's public keys)
-    pub fn public_only(verifying_key: VerifyingKey, age_recipient: AgeRecipient) -> Self {
+    pub fn public_only(verifying_key: VerifyingKey, x25519_recipient: X25519Recipient) -> Self {
         Self {
             signing_key: None,
             verifying_key,
-            age_identity: None,
-            age_recipient,
+            x25519_identity: None,
+            x25519_recipient,
         }
     }
 
@@ -374,14 +412,14 @@ impl KeyStore {
         Self {
             signing_key: None,
             verifying_key: self.verifying_key,
-            age_identity: None,
-            age_recipient: self.age_recipient,
+            x25519_identity: None,
+            x25519_recipient: self.x25519_recipient,
         }
     }
 
     /// Check if this KeyStore has private keys
     pub fn has_private_keys(&self) -> bool {
-        self.signing_key.is_some() && self.age_identity.is_some()
+        self.signing_key.is_some() && self.x25519_identity.is_some()
     }
 }
 
@@ -393,11 +431,11 @@ pub struct RawKeyStore {
     pub signing_key: Option<String>,
     /// Ed25519 verifying key (public)
     pub verifying_key: String,
-    /// Age identity string (private, optional)
+    /// X25519 identity string (private, optional)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub age_identity: Option<String>,
-    /// Age recipient string (public)
-    pub age_recipient: String,
+    pub x25519_identity: Option<String>,
+    /// X25519 recipient string (public)
+    pub x25519_recipient: String,
 }
 
 impl RawKeyStore {
@@ -409,8 +447,8 @@ impl RawKeyStore {
                 .as_ref()
                 .map(|k| STANDARD.encode(k.to_bytes())),
             verifying_key: STANDARD.encode(ks.verifying_key.to_bytes()),
-            age_identity: ks.age_identity.as_ref().map(|i| i.to_string()),
-            age_recipient: ks.age_recipient.to_string(),
+            x25519_identity: ks.x25519_identity.as_ref().map(|i| i.to_string()),
+            x25519_recipient: ks.x25519_recipient.to_string(),
         }
     }
 
@@ -433,10 +471,10 @@ impl RawKeyStore {
             None
         };
 
-        let age_recipient = AgeRecipient::from_str(&self.age_recipient)?;
+        let x25519_recipient = X25519Recipient::from_str(&self.x25519_recipient)?;
 
-        let age_identity = if let Some(ref id) = self.age_identity {
-            Some(AgeIdentity::from_str(id)?)
+        let x25519_identity = if let Some(ref id) = self.x25519_identity {
+            Some(X25519Identity::from_str(id)?)
         } else {
             None
         };
@@ -444,8 +482,8 @@ impl RawKeyStore {
         Ok(KeyStore {
             signing_key,
             verifying_key,
-            age_identity,
-            age_recipient,
+            x25519_identity,
+            x25519_recipient,
         })
     }
 }

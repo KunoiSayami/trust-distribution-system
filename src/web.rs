@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::time::{Duration, Instant};
 
 use axum::{
     Json, Router,
@@ -8,14 +9,18 @@ use axum::{
     routing::{delete, get, post},
 };
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use encryption::ChunkedEncrypted;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::admin;
 use crate::configure::ClientEntry;
 use crate::types::{
-    AppState, EnrollPayload, EnrollRequest, EnrollResponse, ErrorResponse, HealthResponse,
-    ManifestFileEntry, ManifestResponse,
+    AppState, CachedEncryption, EnrollPayload, EnrollRequest, EnrollResponse, ErrorResponse,
+    HealthResponse, ManifestFileEntry, ManifestResponse,
 };
+
+const CHUNK_CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
 
 /// Create the router with all API endpoints
 pub fn create_router(state: AppState) -> Router {
@@ -23,6 +28,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/health", get(health_handler))
         .route("/api/v1/manifest", get(manifest_handler))
         .route("/api/v1/files/{*path}", get(file_handler))
+        .route("/api/v1/files/{*path}/chunks", get(chunk_manifest_handler))
+        .route("/api/v1/files/{*path}/chunk/{index}", get(chunk_handler))
         .route("/api/v1/enroll", post(enroll_handler))
         // Admin endpoints
         .route("/api/v1/admin/tokens", post(admin::admin_create_tokens))
@@ -48,17 +55,13 @@ async fn manifest_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<ManifestResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Authenticate the request
     let client_id = authenticate_request(&state, &headers).await?;
 
-    // Get files for this client
     let config = state.config.read().await;
     let files = config.get_client_files(&client_id);
 
-    // Build manifest entries
     let mut entries = Vec::new();
     for file_info in files {
-        // Read file metadata for modification time
         let metadata = match tokio::fs::metadata(&file_info.source_path).await {
             Ok(m) => m,
             Err(e) => {
@@ -91,7 +94,6 @@ async fn manifest_handler(
 
     let timestamp = chrono::Utc::now().timestamp_millis();
 
-    // Sign the manifest
     let manifest_data = serde_json::to_vec(&entries).unwrap_or_default();
     let (signature, _) =
         encryption::sign(&state.server_signing_key, &manifest_data).map_err(|e| {
@@ -109,33 +111,40 @@ async fn manifest_handler(
     }))
 }
 
-/// File download endpoint - returns encrypted file
-async fn file_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(path): Path<String>,
-) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    // Authenticate the request
-    let client_id = authenticate_request(&state, &headers).await?;
+/// Get or populate the chunk cache for a (client_id, path) pair.
+/// Returns an error response if the file can't be read or encrypted.
+async fn get_or_populate_cache(
+    state: &AppState,
+    client_id: &str,
+    path: &str,
+) -> Result<ChunkedEncrypted, (StatusCode, Json<ErrorResponse>)> {
+    let cache_key = (client_id.to_string(), path.to_string());
 
-    // Get client's age recipient for encryption
+    // Check cache first
+    if let Some(entry) = state.chunk_cache.get(&cache_key) {
+        if entry.expires_at > Instant::now() {
+            return Ok(entry.payload.clone());
+        }
+    }
+
+    // Cache miss or expired — encrypt the file
     let config = state.config.read().await;
-    let client = config.clients.get(&client_id).ok_or_else(|| {
+    let client = config.clients.get(client_id).ok_or_else(|| {
         (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse::new("Client not found", "CLIENT_NOT_FOUND")),
         )
     })?;
 
-    let recipient = encryption::AgeRecipient::from_str(&client.age_public_key).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(e.to_string(), "INVALID_RECIPIENT")),
-        )
-    })?;
+    let recipient =
+        encryption::X25519Recipient::from_str(&client.x25519_public_key).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(e.to_string(), "INVALID_RECIPIENT")),
+            )
+        })?;
 
-    // Find the file
-    let files = config.get_client_files(&client_id);
+    let files = config.get_client_files(client_id);
     let file_info = files
         .iter()
         .find(|f| f.relative_path == path)
@@ -144,9 +153,11 @@ async fn file_handler(
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse::new("File not found", "FILE_NOT_FOUND")),
             )
-        })?;
+        })?
+        .clone();
 
-    // Read and encrypt the file
+    drop(config);
+
     let content = tokio::fs::read(&file_info.source_path).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -156,7 +167,6 @@ async fn file_handler(
 
     let content_hash = format!("sha256:{}", hex::encode(Sha256::digest(&content)));
 
-    // Encrypt for this client
     let encrypted = encryption::encrypt(&recipient, content).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -164,10 +174,98 @@ async fn file_handler(
         )
     })?;
 
-    let encrypted_bytes = encrypted.into_inner();
+    let chunked = encrypted
+        .chunked()
+        .expect("encrypt always returns ChunkedEncrypted");
 
-    // Sign the encrypted content
-    let (signature, timestamp) = encryption::sign(&state.server_signing_key, &encrypted_bytes)
+    state.chunk_cache.insert(
+        cache_key,
+        CachedEncryption {
+            payload: chunked.clone(),
+            expires_at: Instant::now() + CHUNK_CACHE_TTL,
+            content_hash,
+        },
+    );
+
+    Ok(chunked)
+}
+
+/// File download endpoint - returns the full encrypted TransmissionFile (all chunks)
+async fn file_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let client_id = authenticate_request(&state, &headers).await?;
+
+    let chunked = get_or_populate_cache(&state, &client_id, &path).await?;
+
+    let content_hash = state
+        .chunk_cache
+        .get(&(client_id.clone(), path.clone()))
+        .map(|e| e.content_hash.clone())
+        .unwrap_or_default();
+
+    let body_content = encryption::Content::ChunkedEncrypted(chunked);
+    let body_cbor = body_content.to_cbor();
+
+    let (signature, timestamp) =
+        encryption::sign(&state.server_signing_key, &body_cbor).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(e.to_string(), "SIGN_ERROR")),
+            )
+        })?;
+
+    let transmission = encryption::TransmissionFile::new(timestamp, body_content, signature);
+    let body = transmission.to_cbor();
+
+    let mut resp_headers = HeaderMap::new();
+    resp_headers.insert("Content-Type", "application/octet-stream".parse().unwrap());
+    resp_headers.insert("X-Content-Hash", content_hash.parse().unwrap());
+
+    Ok((resp_headers, body))
+}
+
+/// Chunk manifest response
+#[derive(Serialize)]
+struct ChunkManifestResponse {
+    chunk_count: u64,
+    chunk_size: usize,
+    ephemeral_public_key: String,
+    file_nonce: String,
+    content_hash: String,
+    /// Base64 Ed25519 signature over (epk_hex || nonce_hex || chunk_count big-endian 8 bytes)
+    signature: String,
+    timestamp: i64,
+}
+
+/// Returns metadata about available chunks for resumable download
+async fn chunk_manifest_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+) -> Result<Json<ChunkManifestResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let client_id = authenticate_request(&state, &headers).await?;
+
+    let chunked = get_or_populate_cache(&state, &client_id, &path).await?;
+
+    let content_hash = state
+        .chunk_cache
+        .get(&(client_id.clone(), path.clone()))
+        .map(|e| e.content_hash.clone())
+        .unwrap_or_default();
+
+    let epk_hex = hex::encode(&chunked.ephemeral_public_key);
+    let nonce_hex = hex::encode(&chunked.file_nonce);
+
+    // Sign over epk_hex || nonce_hex || chunk_count (big-endian 8 bytes)
+    let mut sign_payload = Vec::new();
+    sign_payload.extend_from_slice(epk_hex.as_bytes());
+    sign_payload.extend_from_slice(nonce_hex.as_bytes());
+    sign_payload.extend_from_slice(&chunked.chunk_count.to_be_bytes());
+
+    let (signature, timestamp) = encryption::sign(&state.server_signing_key, &sign_payload)
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -175,21 +273,46 @@ async fn file_handler(
             )
         })?;
 
-    // Create transmission file
-    let transmission = encryption::TransmissionFile::new(
+    Ok(Json(ChunkManifestResponse {
+        chunk_count: chunked.chunk_count,
+        chunk_size: encryption::CHUNK_SIZE,
+        ephemeral_public_key: epk_hex,
+        file_nonce: nonce_hex,
+        content_hash,
+        signature: BASE64.encode(&signature),
         timestamp,
-        encryption::Content::Encrypted(encrypted_bytes),
-        signature,
+    }))
+}
+
+/// Returns raw ciphertext bytes for a single chunk
+async fn chunk_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((path, index)): Path<(String, u64)>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let client_id = authenticate_request(&state, &headers).await?;
+
+    let chunked = get_or_populate_cache(&state, &client_id, &path).await?;
+
+    let chunk_data = chunked.chunks.get(index as usize).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                format!("Chunk index {index} out of range"),
+                "INVALID_CHUNK_INDEX",
+            )),
+        )
+    })?;
+
+    let mut resp_headers = HeaderMap::new();
+    resp_headers.insert("Content-Type", "application/octet-stream".parse().unwrap());
+    resp_headers.insert("X-Chunk-Index", index.to_string().parse().unwrap());
+    resp_headers.insert(
+        "X-Chunk-Count",
+        chunked.chunk_count.to_string().parse().unwrap(),
     );
 
-    let body = transmission.to_cbor();
-
-    // Return with headers
-    let mut headers = HeaderMap::new();
-    headers.insert("Content-Type", "application/octet-stream".parse().unwrap());
-    headers.insert("X-Content-Hash", content_hash.parse().unwrap());
-
-    Ok((headers, body))
+    Ok((resp_headers, chunk_data.clone()))
 }
 
 /// Authenticate a request using Ed25519 signature
@@ -197,7 +320,6 @@ async fn authenticate_request(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
-    // Extract required headers
     let client_id = headers
         .get("X-Client-Id")
         .and_then(|v| v.to_str().ok())
@@ -280,7 +402,7 @@ async fn authenticate_request(
 
     // Check timestamp is within acceptable window (5 minutes)
     let now = chrono::Utc::now().timestamp_millis();
-    let window = 5 * 60 * 1000; // 5 minutes in ms
+    let window = 5 * 60 * 1000;
     if (now - timestamp).abs() > window {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -291,7 +413,6 @@ async fn authenticate_request(
         ));
     }
 
-    // Check nonce hasn't been used
     if !state
         .nonce_cache
         .check_and_mark(client_id, nonce, timestamp)
@@ -302,7 +423,6 @@ async fn authenticate_request(
         ));
     }
 
-    // Get client's public key
     let config = state.config.read().await;
     let client = config.clients.get(client_id).ok_or_else(|| {
         (
@@ -314,7 +434,6 @@ async fn authenticate_request(
         )
     })?;
 
-    // Parse the client's verifying key
     let verifying_key_bytes = BASE64.decode(&client.auth_public_key).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -346,11 +465,8 @@ async fn authenticate_request(
             )
         })?;
 
-    // Reconstruct the signing payload
-    // payload = client_id || "\n" || timestamp || "\n" || nonce
     let payload = format!("{}\n{}\n{}", client_id, timestamp, nonce);
 
-    // Verify signature
     let valid = encryption::verify(&verifying_key, payload.as_bytes(), &signature, timestamp)
         .map_err(|e| {
             (
@@ -375,7 +491,6 @@ async fn enroll_handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(request): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Check if enrollment is enabled
     let config = state.config.read().await;
     let enrollment_config = &config.server.enrollment;
 
@@ -389,15 +504,12 @@ async fn enroll_handler(
         ));
     }
 
-    // Check if localhost bypass is allowed
     let is_localhost = addr.ip().is_loopback();
     let skip_token = enrollment_config.allow_localhost && is_localhost;
-    drop(config); // Release read lock before acquiring write lock
+    drop(config);
 
-    // Validate token (unless localhost bypass)
     let mut token_store = state.token_store.write().await;
     let (client_id, groups) = if skip_token {
-        // Localhost enrollment without token - require client_id and groups in request
         let client_id = request.client_id.clone().ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
@@ -419,7 +531,6 @@ async fn enroll_handler(
         log::info!("Localhost enrollment for client: {}", client_id);
         (client_id, groups)
     } else {
-        // Normal token-based enrollment
         let token_entry = token_store.validate(&request.token_secret).ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
@@ -432,7 +543,7 @@ async fn enroll_handler(
         (token_entry.client_id.clone(), token_entry.groups.clone())
     };
 
-    // Decrypt the payload using server's age identity
+    // Decrypt the payload using server's X25519 identity
     let encrypted_payload = BASE64.decode(&request.encrypted_payload).map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
@@ -443,13 +554,30 @@ async fn enroll_handler(
         )
     })?;
 
-    let decrypted =
-        encryption::decrypt(&state.server_age_identity, encrypted_payload).map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(e.to_string(), "DECRYPT_ERROR")),
-            )
-        })?;
+    // The client encrypts the payload and serializes it as Content CBOR.
+    let content = encryption::Content::from_cbor(&encrypted_payload).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(e.to_string(), "INVALID_PAYLOAD_FORMAT")),
+        )
+    })?;
+
+    let chunked = content.chunked().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "Expected chunked encrypted payload",
+                "INVALID_PAYLOAD_FORMAT",
+            )),
+        )
+    })?;
+
+    let decrypted = encryption::decrypt(&state.server_x25519_identity, &chunked).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(e.to_string(), "DECRYPT_ERROR")),
+        )
+    })?;
 
     let payload: EnrollPayload = serde_json::from_slice(&decrypted.into_inner()).map_err(|e| {
         (
@@ -458,32 +586,28 @@ async fn enroll_handler(
         )
     })?;
 
-    // Validate the keys format
-    if !payload.age_public_key.starts_with("age1") {
-        return Err((
+    // Validate key format
+    encryption::X25519Recipient::from_str(&payload.x25519_public_key).map_err(|_| {
+        (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
-                "Invalid age public key format",
-                "INVALID_AGE_KEY",
+                "Invalid x25519 public key format",
+                "INVALID_X25519_KEY",
             )),
-        ));
-    }
+        )
+    })?;
 
-    // Mark token as used (only for token-based enrollment)
     if !skip_token {
         token_store.mark_used(&request.token_secret);
-        // Token store is in-memory only, no persistence needed
     }
 
-    // Add client to config
     let client_entry = ClientEntry {
-        age_public_key: payload.age_public_key,
+        x25519_public_key: payload.x25519_public_key,
         auth_public_key: payload.auth_public_key,
         groups: groups.clone(),
         enrolled_at: Some(chrono::Utc::now().to_rfc3339()),
     };
 
-    // Update in-memory config
     {
         let mut config = state.config.write().await;
         config
@@ -491,7 +615,6 @@ async fn enroll_handler(
             .insert(client_id.clone(), client_entry.clone());
     }
 
-    // Append to config file
     append_client_to_config(&state.config_path, &client_id, &client_entry)
         .await
         .map_err(|e| {
@@ -519,13 +642,13 @@ async fn append_client_to_config(
 
 # Auto-added by enrollment at {}
 [clients.{client_id}]
-age_public_key = "{}"
+x25519_public_key = "{}"
 auth_public_key = "{}"
 groups = {:?}
 enrolled_at = "{}"
 "#,
         entry.enrolled_at.as_ref().unwrap_or(&String::new()),
-        entry.age_public_key,
+        entry.x25519_public_key,
         entry.auth_public_key,
         entry.groups,
         entry.enrolled_at.as_ref().unwrap_or(&String::new()),

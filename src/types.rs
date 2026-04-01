@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use encryption::ChunkedEncrypted;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -11,13 +12,21 @@ use crate::enrollment::TokenStore;
 // Re-export shared types from pub-impl
 pub use pub_impl::{EnrollPayload, EnrollRequest, EnrollResponse};
 
+/// Cached per-client encrypted file (keyed by (client_id, relative_path))
+pub struct CachedEncryption {
+    pub payload: ChunkedEncrypted,
+    pub expires_at: std::time::Instant,
+    pub content_hash: String,
+}
+
 /// Application state shared across handlers
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<RwLock<ServerConfig>>,
     pub server_signing_key: Arc<encryption::SigningKey>,
-    pub server_age_identity: Arc<encryption::AgeIdentity>,
+    pub server_x25519_identity: Arc<encryption::X25519Identity>,
     pub nonce_cache: Arc<NonceCache>,
+    pub chunk_cache: Arc<DashMap<(String, String), CachedEncryption>>,
     pub token_store: Arc<RwLock<TokenStore>>,
     pub config_path: PathBuf,
 }
@@ -26,15 +35,16 @@ impl AppState {
     pub fn new(
         config: ServerConfig,
         signing_key: encryption::SigningKey,
-        age_identity: encryption::AgeIdentity,
+        x25519_identity: encryption::X25519Identity,
         token_store: TokenStore,
         config_path: PathBuf,
     ) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
             server_signing_key: Arc::new(signing_key),
-            server_age_identity: Arc::new(age_identity),
+            server_x25519_identity: Arc::new(x25519_identity),
             nonce_cache: Arc::new(NonceCache::new()),
+            chunk_cache: Arc::new(DashMap::new()),
             token_store: Arc::new(RwLock::new(token_store)),
             config_path,
         }

@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
 /// Token format prefix
-pub const TOKEN_VERSION: &str = "tds-enroll-v1";
+pub const TOKEN_VERSION: &str = "tds-enroll-v2";
 
 // ============================================================================
 // Shared enrollment types (used by both server and client)
@@ -25,7 +25,7 @@ pub struct EnrollRequest {
 /// Payload inside the encrypted enrollment request
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EnrollPayload {
-    pub age_public_key: String,
+    pub x25519_public_key: String,
     pub auth_public_key: String,
 }
 
@@ -40,7 +40,7 @@ pub struct EnrollResponse {
 #[derive(Debug, Clone)]
 pub struct ParsedToken {
     pub secret: String,
-    pub server_age_recipient: String,
+    pub server_x25519_recipient: String,
     pub server_verify_key: String,
 }
 
@@ -57,7 +57,7 @@ impl ParsedToken {
 
         Ok(Self {
             secret: parts[1].to_string(),
-            server_age_recipient: parts[2].to_string(),
+            server_x25519_recipient: parts[2].to_string(),
             server_verify_key: parts[3].to_string(),
         })
     }
@@ -65,12 +65,12 @@ impl ParsedToken {
     /// Create a token string from components
     pub fn to_token_string(
         secret: &str,
-        server_age_recipient: &str,
+        server_x25519_recipient: &str,
         server_verify_key: &str,
     ) -> String {
         format!(
             "{}:{}:{}:{}",
-            TOKEN_VERSION, secret, server_age_recipient, server_verify_key
+            TOKEN_VERSION, secret, server_x25519_recipient, server_verify_key
         )
     }
 }

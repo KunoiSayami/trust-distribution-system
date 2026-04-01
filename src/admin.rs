@@ -187,7 +187,7 @@ pub async fn admin_create_tokens(
     let expiry_hours = request
         .expiry_hours
         .unwrap_or(config.server.enrollment.token_expiry_hours);
-    let server_age_recipient = state.server_age_identity.to_recipient().to_string();
+    let server_x25519_recipient = state.server_x25519_identity.to_recipient().to_string();
     let server_verify_key = BASE64.encode(state.server_signing_key.verifying_key().to_bytes());
     drop(config);
 
@@ -207,7 +207,7 @@ pub async fn admin_create_tokens(
         let (token, entry) = generate_token(
             &client_id,
             &request.groups,
-            &server_age_recipient,
+            &server_x25519_recipient,
             &server_verify_key,
             expiry_hours,
         );

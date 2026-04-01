@@ -43,7 +43,7 @@ fn default_state_file() -> PathBuf {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ClientKeyConfig {
-    pub age_identity_path: PathBuf,
+    pub x25519_identity_path: PathBuf,
     pub signing_key_path: PathBuf,
     pub server_verify_key: String,
 }
@@ -97,7 +97,7 @@ poll_interval = 300
 state_file = "/var/lib/tds/state.json"
 
 [client.keys]
-age_identity_path = "/etc/tds/client.age"
+x25519_identity_path = "/etc/tds/client.x25519"
 signing_key_path = "/etc/tds/client_signing.key"
 server_verify_key = "base64key"
 

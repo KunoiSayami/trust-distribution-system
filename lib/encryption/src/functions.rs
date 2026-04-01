@@ -1,16 +1,20 @@
-use std::io::{Read, Write};
-
-use crate::types::{AgeIdentity, AgeRecipient, KeyStore, SigningKey, VerifyingKey};
+use crate::types::{ChunkedEncrypted, KeyStore, SigningKey, VerifyingKey, X25519Identity, X25519Recipient, CHUNK_SIZE};
 use crate::Content;
+use aes_gcm::{
+    Aes256Gcm, Key, Nonce,
+    aead::{Aead, AeadCore, KeyInit, Payload},
+};
 use anyhow::anyhow;
 use ed25519_dalek::Signer;
+use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 /// Generate a new keypair (both signing and encryption keys)
 pub fn generate_keypair() -> KeyStore {
     let signing_key = SigningKey::generate();
-    let age_identity = AgeIdentity::generate();
-    KeyStore::new(signing_key, age_identity)
+    let x25519_identity = X25519Identity::generate();
+    KeyStore::new(signing_key, x25519_identity)
 }
 
 /// Sign content with Ed25519 key
@@ -19,7 +23,6 @@ pub fn sign(key: &SigningKey, content: &[u8]) -> anyhow::Result<(Vec<u8>, i64)> 
     let now = chrono::Utc::now();
     let timestamp = now.timestamp_millis();
 
-    // Create digest of content + timestamp
     let digest = {
         let mut hasher = Sha256::new();
         hasher.update(content);
@@ -54,7 +57,6 @@ pub fn verify(
         .map_err(|_| anyhow!("Invalid signature length"))?;
     let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
 
-    // Recreate the digest
     let digest = {
         let mut hasher = Sha256::new();
         hasher.update(content);
@@ -75,44 +77,145 @@ pub fn verify_with_keystore(
     verify(&key.verifying_key, content, signature_raw, timestamp)
 }
 
-/// Encrypt content using age for a specific recipient
-pub fn encrypt(recipient: &AgeRecipient, plain: Vec<u8>) -> anyhow::Result<Content> {
-    let recipient_clone = recipient.inner().clone();
-    let recipients: Vec<&dyn age::Recipient> = vec![&recipient_clone];
-    let encryptor = age::Encryptor::with_recipients(recipients.into_iter())
-        .map_err(|_| anyhow!("Failed to create encryptor"))?;
-
-    let mut encrypted = vec![];
-    let mut writer = encryptor.wrap_output(&mut encrypted)?;
-    writer.write_all(&plain)?;
-    writer.finish()?;
-
-    Ok(Content::Encrypted(encrypted))
+/// Derive per-chunk nonce: XOR last 8 bytes of file_nonce with chunk_index (little-endian)
+fn chunk_nonce(file_nonce: &[u8; 12], chunk_index: u64) -> [u8; 12] {
+    let mut nonce = *file_nonce;
+    let idx = chunk_index.to_le_bytes();
+    for i in 0..8 {
+        nonce[4 + i] ^= idx[i];
+    }
+    nonce
 }
 
-/// Encrypt using KeyStore's age recipient (convenience function)
+/// Derive the AES-256 file key from the X25519 shared secret via HKDF-SHA256
+fn derive_file_key(
+    identity: &X25519Identity,
+    ephemeral_public_bytes: &[u8],
+    file_nonce: &[u8],
+) -> anyhow::Result<[u8; 32]> {
+    let epk_bytes: [u8; 32] = ephemeral_public_bytes
+        .try_into()
+        .map_err(|_| anyhow!("Ephemeral public key must be 32 bytes"))?;
+    let ephemeral_public = x25519_dalek::PublicKey::from(epk_bytes);
+    let shared = identity.secret().diffie_hellman(&ephemeral_public);
+
+    let hkdf = Hkdf::<Sha256>::new(Some(file_nonce), shared.as_bytes());
+    let mut file_key = [0u8; 32];
+    hkdf.expand(b"tds-aes-gcm-v1", &mut file_key)
+        .map_err(|_| anyhow!("HKDF expand failed"))?;
+    Ok(file_key)
+}
+
+/// Encrypt plaintext into chunked AES-256-GCM format
+pub fn encrypt(recipient: &X25519Recipient, plain: Vec<u8>) -> anyhow::Result<Content> {
+    use rand::rngs::OsRng;
+    use x25519_dalek::EphemeralSecret;
+
+    let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
+    let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_secret);
+    let shared = ephemeral_secret.diffie_hellman(recipient.public_key());
+
+    let file_nonce_arr = Aes256Gcm::generate_nonce(OsRng);
+    let file_nonce: [u8; 12] = file_nonce_arr.into();
+
+    let hkdf = Hkdf::<Sha256>::new(Some(&file_nonce), shared.as_bytes());
+    let mut file_key = [0u8; 32];
+    hkdf.expand(b"tds-aes-gcm-v1", &mut file_key)
+        .map_err(|_| anyhow!("HKDF expand failed"))?;
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&file_key));
+
+    let mut chunks = Vec::new();
+    for (i, chunk) in plain.chunks(CHUNK_SIZE).enumerate() {
+        let nonce_arr = chunk_nonce(&file_nonce, i as u64);
+        let nonce = Nonce::from_slice(&nonce_arr);
+        let aad = (i as u64).to_be_bytes();
+        let ciphertext = cipher
+            .encrypt(nonce, Payload { msg: chunk, aad: &aad })
+            .map_err(|_| anyhow!("AES-GCM encryption failed for chunk {i}"))?;
+        chunks.push(ciphertext);
+    }
+
+    let chunk_count = chunks.len() as u64;
+    file_key.zeroize();
+
+    Ok(Content::ChunkedEncrypted(ChunkedEncrypted {
+        ephemeral_public_key: ephemeral_public.as_bytes().to_vec(),
+        file_nonce: file_nonce.to_vec(),
+        chunk_count,
+        chunks,
+    }))
+}
+
+/// Encrypt using KeyStore's X25519 recipient (convenience function)
 pub fn encrypt_with_keystore(key: &KeyStore, plain: Vec<u8>) -> anyhow::Result<Content> {
-    encrypt(&key.age_recipient, plain)
+    encrypt(&key.x25519_recipient, plain)
 }
 
-/// Decrypt age-encrypted content
-pub fn decrypt(identity: &AgeIdentity, encrypted: Vec<u8>) -> anyhow::Result<Content> {
-    let decryptor = age::Decryptor::new(&encrypted[..])?;
+/// Decrypt all chunks from a ChunkedEncrypted payload
+pub fn decrypt(identity: &X25519Identity, payload: &ChunkedEncrypted) -> anyhow::Result<Content> {
+    let file_nonce_arr: [u8; 12] = payload
+        .file_nonce
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow!("file_nonce must be 12 bytes"))?;
 
-    let mut decrypted = vec![];
-    let mut reader = decryptor.decrypt(std::iter::once(identity.inner() as &dyn age::Identity))?;
-    reader.read_to_end(&mut decrypted)?;
+    let mut file_key = derive_file_key(identity, &payload.ephemeral_public_key, &payload.file_nonce)?;
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&file_key));
 
-    Ok(Content::Plain(decrypted))
+    let mut plaintext = Vec::new();
+    for (i, ciphertext) in payload.chunks.iter().enumerate() {
+        let nonce_arr = chunk_nonce(&file_nonce_arr, i as u64);
+        let nonce = Nonce::from_slice(&nonce_arr);
+        let aad = (i as u64).to_be_bytes();
+        let chunk = cipher
+            .decrypt(nonce, Payload { msg: ciphertext.as_slice(), aad: &aad })
+            .map_err(|_| anyhow!("AES-GCM decryption failed for chunk {i}: authentication error"))?;
+        plaintext.extend_from_slice(&chunk);
+    }
+
+    file_key.zeroize();
+    Ok(Content::Plain(plaintext))
 }
 
-/// Decrypt using KeyStore's age identity (convenience function)
-pub fn decrypt_with_keystore(key: &KeyStore, encrypted: Vec<u8>) -> anyhow::Result<Content> {
+/// Decrypt a single chunk by index — enables resumable downloads
+pub fn decrypt_chunk(
+    identity: &X25519Identity,
+    payload: &ChunkedEncrypted,
+    chunk_index: usize,
+) -> anyhow::Result<Vec<u8>> {
+    let file_nonce_arr: [u8; 12] = payload
+        .file_nonce
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow!("file_nonce must be 12 bytes"))?;
+
+    let ciphertext = payload
+        .chunks
+        .get(chunk_index)
+        .ok_or_else(|| anyhow!("Chunk index {chunk_index} out of range (count: {})", payload.chunk_count))?;
+
+    let mut file_key = derive_file_key(identity, &payload.ephemeral_public_key, &payload.file_nonce)?;
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&file_key));
+
+    let nonce_arr = chunk_nonce(&file_nonce_arr, chunk_index as u64);
+    let nonce = Nonce::from_slice(&nonce_arr);
+    let aad = (chunk_index as u64).to_be_bytes();
+    let chunk = cipher
+        .decrypt(nonce, Payload { msg: ciphertext.as_slice(), aad: &aad })
+        .map_err(|_| anyhow!("AES-GCM decryption failed for chunk {chunk_index}: authentication error"))?;
+
+    file_key.zeroize();
+    Ok(chunk)
+}
+
+/// Decrypt using KeyStore's X25519 identity (convenience function)
+pub fn decrypt_with_keystore(key: &KeyStore, payload: &ChunkedEncrypted) -> anyhow::Result<Content> {
     let identity = key
-        .age_identity
+        .x25519_identity
         .as_ref()
-        .ok_or_else(|| anyhow!("No age identity available"))?;
-    decrypt(identity, encrypted)
+        .ok_or_else(|| anyhow!("No X25519 identity available"))?;
+    decrypt(identity, payload)
 }
 
 /// Compute SHA-256 hash of content
@@ -149,20 +252,14 @@ mod test {
         let (signature, timestamp) = sign(signing_key, CONTENT).unwrap();
 
         assert!(verify(&ks.verifying_key, CONTENT, &signature, timestamp).unwrap());
-
-        // Wrong content should fail
         assert!(!verify(&ks.verifying_key, b"wrong", &signature, timestamp).unwrap());
-
-        // Wrong timestamp should fail
         assert!(!verify(&ks.verifying_key, CONTENT, &signature, timestamp + 1).unwrap());
     }
 
     #[test]
     fn test_sign_verify_with_keystore() {
         let ks = generate_keypair();
-
         let (signature, timestamp) = sign_with_keystore(&ks, CONTENT).unwrap();
-
         assert!(verify_with_keystore(&ks, CONTENT, &signature, timestamp).unwrap());
     }
 
@@ -170,10 +267,11 @@ mod test {
     fn test_encrypt_decrypt() {
         let ks = generate_keypair();
 
-        let encrypted = encrypt(&ks.age_recipient, CONTENT.to_vec()).unwrap();
+        let encrypted = encrypt(&ks.x25519_recipient, CONTENT.to_vec()).unwrap();
         assert!(encrypted.is_encrypted());
 
-        let decrypted = decrypt(ks.age_identity.as_ref().unwrap(), encrypted.into_inner()).unwrap();
+        let chunked = encrypted.chunked().unwrap();
+        let decrypted = decrypt(ks.x25519_identity.as_ref().unwrap(), &chunked).unwrap();
         assert_eq!(decrypted.plain().unwrap(), CONTENT);
     }
 
@@ -184,31 +282,59 @@ mod test {
         let encrypted = encrypt_with_keystore(&ks, CONTENT.to_vec()).unwrap();
         assert!(encrypted.is_encrypted());
 
-        let decrypted = decrypt_with_keystore(&ks, encrypted.into_inner()).unwrap();
+        let chunked = encrypted.chunked().unwrap();
+        let decrypted = decrypt_with_keystore(&ks, &chunked).unwrap();
         assert_eq!(decrypted.plain().unwrap(), CONTENT);
     }
 
     #[test]
+    fn test_decrypt_chunk() {
+        let ks = generate_keypair();
+
+        let encrypted = encrypt(&ks.x25519_recipient, CONTENT.to_vec()).unwrap();
+        let chunked = encrypted.chunked().unwrap();
+
+        let chunk_bytes = decrypt_chunk(ks.x25519_identity.as_ref().unwrap(), &chunked, 0).unwrap();
+        assert_eq!(chunk_bytes, CONTENT);
+    }
+
+    #[test]
     fn test_cross_party_encryption() {
-        // Simulate server encrypting for client
-        let server_ks = generate_keypair();
         let client_ks = generate_keypair();
 
-        // Server encrypts using client's public key (recipient)
-        let encrypted = encrypt(&client_ks.age_recipient, CONTENT.to_vec()).unwrap();
-
-        // Client decrypts using their private key (identity)
-        let decrypted =
-            decrypt(client_ks.age_identity.as_ref().unwrap(), encrypted.into_inner()).unwrap();
+        let encrypted = encrypt(&client_ks.x25519_recipient, CONTENT.to_vec()).unwrap();
+        let chunked = encrypted.chunked().unwrap();
+        let decrypted = decrypt(client_ks.x25519_identity.as_ref().unwrap(), &chunked).unwrap();
         assert_eq!(decrypted.plain().unwrap(), CONTENT);
 
-        // Server cannot decrypt (doesn't have client's identity)
-        let encrypted2 = encrypt(&client_ks.age_recipient, CONTENT.to_vec()).unwrap();
-        let result = decrypt(
-            server_ks.age_identity.as_ref().unwrap(),
-            encrypted2.into_inner(),
-        );
+        // Wrong key cannot decrypt
+        let other_ks = generate_keypair();
+        let encrypted2 = encrypt(&client_ks.x25519_recipient, CONTENT.to_vec()).unwrap();
+        let chunked2 = encrypted2.chunked().unwrap();
+        let result = decrypt(other_ks.x25519_identity.as_ref().unwrap(), &chunked2);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_multi_chunk() {
+        let ks = generate_keypair();
+        // Create content larger than one chunk
+        let large_content: Vec<u8> = (0..CHUNK_SIZE + 100).map(|i| (i % 256) as u8).collect();
+
+        let encrypted = encrypt(&ks.x25519_recipient, large_content.clone()).unwrap();
+        let chunked = encrypted.chunked().unwrap();
+        assert_eq!(chunked.chunk_count, 2);
+
+        // Full decrypt
+        let decrypted = decrypt(ks.x25519_identity.as_ref().unwrap(), &chunked).unwrap();
+        assert_eq!(decrypted.plain().unwrap(), large_content);
+
+        // Per-chunk decrypt
+        let chunk0 = decrypt_chunk(ks.x25519_identity.as_ref().unwrap(), &chunked, 0).unwrap();
+        let chunk1 = decrypt_chunk(ks.x25519_identity.as_ref().unwrap(), &chunked, 1).unwrap();
+        let mut reassembled = chunk0;
+        reassembled.extend_from_slice(&chunk1);
+        assert_eq!(reassembled, large_content);
     }
 
     #[test]
@@ -226,16 +352,14 @@ mod test {
 
         assert!(!public_ks.has_private_keys());
 
-        // Can still verify signatures
         let (signature, timestamp) = sign_with_keystore(&ks, CONTENT).unwrap();
         assert!(verify_with_keystore(&public_ks, CONTENT, &signature, timestamp).unwrap());
 
-        // Can still encrypt to this recipient
         let encrypted = encrypt_with_keystore(&public_ks, CONTENT.to_vec()).unwrap();
         assert!(encrypted.is_encrypted());
 
-        // But public-only cannot sign or decrypt
         assert!(sign_with_keystore(&public_ks, CONTENT).is_err());
-        assert!(decrypt_with_keystore(&public_ks, encrypted.into_inner()).is_err());
+        let chunked = encrypted.chunked().unwrap();
+        assert!(decrypt_with_keystore(&public_ks, &chunked).is_err());
     }
 }

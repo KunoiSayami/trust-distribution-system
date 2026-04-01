@@ -113,12 +113,13 @@ async fn run_server(config_path: PathBuf) -> anyhow::Result<()> {
     log::info!("Loading server keys...");
     let signing_key =
         encryption::async_fn::load_signing_key(&config.server.keys.signing_key_path).await?;
-    let age_identity =
-        encryption::async_fn::load_age_identity(&config.server.keys.age_identity_path).await?;
+    let x25519_identity =
+        encryption::async_fn::load_x25519_identity(&config.server.keys.x25519_identity_path)
+            .await?;
 
     log::info!(
-        "Server age recipient: {}",
-        age_identity.to_recipient().to_string()
+        "Server X25519 recipient: {}",
+        x25519_identity.to_recipient().to_string()
     );
 
     // Create empty in-memory token store
@@ -127,7 +128,7 @@ async fn run_server(config_path: PathBuf) -> anyhow::Result<()> {
     let state = AppState::new(
         config.clone(),
         signing_key,
-        age_identity,
+        x25519_identity,
         token_store,
         config_path,
     );
@@ -171,24 +172,24 @@ async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
     log::info!("Wrote signing key to {signing_key_path:?}");
     log::info!("Wrote verifying key to {verifying_key_path:?}");
 
-    // Generate age identity
-    let age_identity = encryption::AgeIdentity::generate();
-    let age_identity_path = output.join("server.age");
+    // Generate X25519 identity
+    let x25519_identity = encryption::X25519Identity::generate();
+    let x25519_identity_path = output.join("server.x25519");
 
-    encryption::async_fn::write_age_identity(&age_identity_path, &age_identity).await?;
+    encryption::async_fn::write_x25519_identity(&x25519_identity_path, &x25519_identity).await?;
 
-    log::info!("Wrote age identity to {age_identity_path:?}");
+    log::info!("Wrote X25519 identity to {x25519_identity_path:?}");
     log::info!(
-        "Server age recipient (share with clients): {}",
-        age_identity.to_recipient().to_string()
+        "Server X25519 recipient (share with clients): {}",
+        x25519_identity.to_recipient().to_string()
     );
 
     println!("\nServer keys generated successfully!");
     println!("Signing key: {signing_key_path:?}");
-    println!("Age identity: {age_identity_path:?}");
+    println!("X25519 identity: {x25519_identity_path:?}");
     println!(
-        "\nAge recipient (for client config): {}",
-        age_identity.to_recipient().to_string()
+        "\nX25519 recipient (for client config): {}",
+        x25519_identity.to_recipient().to_string()
     );
 
     Ok(())

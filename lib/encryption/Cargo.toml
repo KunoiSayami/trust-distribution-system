@@ -17,8 +17,10 @@ sha2 = "0.10"
 minicbor-serde = { version = "0.6.0", features = ["alloc"] }
 tokio = { version = "1", optional = true, features = ["io-util", "fs"] }
 
-# Age encryption
-age = { version = "0.11", features = ["armor"] }
+# X25519 key exchange + AES-256-GCM encryption
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+aes-gcm = "0.10"
+hkdf = "0.12"
 
 # Ed25519 signing
 ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }

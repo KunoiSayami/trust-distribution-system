@@ -47,24 +47,25 @@ pub async fn write_key<P: AsRef<Path> + Debug>(
     Ok(())
 }
 
-/// Load age identity from file (AGE-SECRET-KEY-1... format)
-pub async fn load_age_identity<P: AsRef<Path>>(path: P) -> anyhow::Result<crate::AgeIdentity> {
+/// Load X25519 identity from file (X25519-SECRET-KEY-1:... format)
+pub async fn load_x25519_identity<P: AsRef<Path>>(
+    path: P,
+) -> anyhow::Result<crate::X25519Identity> {
     let content = open_file_and_read(path).await?;
     let s = String::from_utf8(content)?;
-    // Parse the identity, skipping comment lines
     for line in s.lines() {
         let line = line.trim();
-        if line.starts_with("AGE-SECRET-KEY-") {
-            return crate::AgeIdentity::from_str(line);
+        if line.starts_with("X25519-SECRET-KEY-1:") {
+            return crate::X25519Identity::from_str(line);
         }
     }
-    Err(anyhow::anyhow!("No age identity found in file"))
+    Err(anyhow::anyhow!("No X25519 identity found in file"))
 }
 
-/// Write age identity to file in standard format
-pub async fn write_age_identity<P: AsRef<Path>>(
+/// Write X25519 identity to file in standard format
+pub async fn write_x25519_identity<P: AsRef<Path>>(
     path: P,
-    identity: &crate::AgeIdentity,
+    identity: &crate::X25519Identity,
 ) -> std::io::Result<()> {
     let recipient = identity.to_recipient();
     let content = format!(

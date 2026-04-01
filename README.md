@@ -1,13 +1,14 @@
 # Trust Distribution System (TDS)
 
-A secure certificate and file distribution system using **age encryption** and **Ed25519 signing** over HTTP. Clients poll the server for changes and download encrypted files, with configurable post-download actions.
+A secure certificate and file distribution system using **AES-256-GCM encryption** and **Ed25519 signing** over HTTP. Clients poll the server for changes and download encrypted files with resumable chunked transfers and configurable post-download actions.
 
 ## Features
 
-- **End-to-end encryption**: Files encrypted per-client using age (X25519)
+- **End-to-end encryption**: Files encrypted per-client using X25519 ECDH key exchange + AES-256-GCM
+- **Resumable downloads**: Files split into 1 MB chunks; interrupted downloads resume from the last verified chunk
 - **Authenticated requests**: Ed25519 signatures for client authentication
 - **Change detection**: Polling with SHA-256 hash comparison
-- **Group-based access**: Clients subscribe to groups, groups contain files/directories
+- **Group-based access**: Clients subscribe to groups, groups contain paths (files or directories, auto-detected)
 - **Post-download actions**: Run commands after files change (e.g., `systemctl reload nginx`)
 - **Simple enrollment**: One-time tokens for easy client setup
 - **Reverse proxy friendly**: Runs behind nginx without TLS
@@ -21,9 +22,9 @@ cargo run --bin server -- keygen -o /etc/tds/
 ```
 
 This creates:
-- `server_signing.key` - Ed25519 private key for signing
-- `server_signing.pub` - Ed25519 public key (for clients)
-- `server.age` - Age identity for decrypting enrollment payloads
+- `server_signing.key` — Ed25519 private key for signing
+- `server_signing.pub` — Ed25519 public key (share with clients via config)
+- `server.x25519` — X25519 identity for decrypting enrollment payloads
 
 ### 2. Create Server Configuration
 
@@ -42,7 +43,7 @@ bind = "127.0.0.1:8080"
 
 [server.keys]
 signing_key_path = "/etc/tds/server_signing.key"
-age_identity_path = "/etc/tds/server.age"
+x25519_identity_path = "/etc/tds/server.x25519"
 
 # Admin credentials for token management (generate with hash-password and totp-setup)
 [server.admin]
@@ -57,19 +58,15 @@ allow_localhost = false  # Allow token-free enrollment from localhost (dev only)
 
 # Define file groups
 [groups.production]
-files = [
+paths = [
   "/etc/certs/ca.pem",
-  "/etc/certs/intermediate.pem"
-]
-directories = [
+  "/etc/certs/intermediate.pem",
   "/etc/letsencrypt/live/example.com"
 ]
 
 [groups.web-servers]
-files = [
-  "/etc/nginx/nginx.conf"
-]
-directories = [
+paths = [
+  "/etc/nginx/nginx.conf",
   "/etc/nginx/sites-enabled"
 ]
 ```
@@ -98,7 +95,7 @@ cargo run --bin server -- token -s http://127.0.0.1:8080 -p <admin-password> -t 
 
 This outputs a token like:
 ```
-tds-enroll-v1:abc123...:age1server...:ed25519pubkey...
+tds-enroll-v2:abc123...:X25519-PUBLIC-KEY-1:aabbcc...:ed25519pubkey...
 ```
 
 ### 5. Enroll a Client
@@ -108,7 +105,7 @@ On the client machine:
 ```bash
 cargo run --bin client -- enroll \
   --server "https://server:8443" \
-  --token "tds-enroll-v1:abc123..." \
+  --token "tds-enroll-v2:abc123..." \
   --config-dir /etc/tds-client/
 ```
 
@@ -126,7 +123,7 @@ poll_interval = 300
 state_file = "/var/lib/tds/state.json"
 
 [client.keys]
-age_identity_path = "/etc/tds-client/client.age"
+x25519_identity_path = "/etc/tds-client/client.x25519"
 signing_key_path = "/etc/tds-client/client_signing.key"
 server_verify_key = "base64_ed25519_pubkey"
 
@@ -169,24 +166,28 @@ cargo run --bin client -- -c /etc/tds-client/client.toml run
 │                         SERVER                                   │
 │  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐ │
 │  │ Config TOML  │  │  Ed25519     │  │   Client Registry      │ │
-│  │ - clients    │  │  Signing Key │  │   (age pubkeys,        │ │
+│  │ - clients    │  │  Signing Key │  │   (x25519 pubkeys,     │ │
 │  │ - groups     │  │              │  │    auth pubkeys,       │ │
 │  │ - files      │  │              │  │    group membership)   │ │
 │  └──────────────┘  └──────────────┘  └────────────────────────┘ │
 │                            │                                     │
-│                    ┌───────▼───────┐                            │
-│                    │  HTTP API     │                            │
-│                    │  /manifest    │                            │
-│                    │  /files/{p}   │                            │
-│                    └───────────────┘                            │
+│                    ┌───────▼────────┐                           │
+│                    │  HTTP API      │                           │
+│                    │  /manifest     │                           │
+│                    │  /files/{p}    │                           │
+│                    │  /files/{p}/   │                           │
+│                    │    chunks      │                           │
+│                    │  /files/{p}/   │                           │
+│                    │    chunk/{i}   │                           │
+│                    └────────────────┘                           │
 └──────────────────────────────────────────────────────────────────┘
                              │
-                    HTTP (age-encrypted)
+               HTTP (AES-256-GCM encrypted, chunked)
                              │
 ┌──────────────────────────────────────────────────────────────────┐
 │                         CLIENT                                    │
 │  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐  │
-│  │ Config TOML  │  │  Age         │  │  Ed25519 Signing Key   │  │
+│  │ Config TOML  │  │  X25519      │  │  Ed25519 Signing Key   │  │
 │  │ - server_url │  │  Identity    │  │  (for auth)            │  │
 │  │ - actions    │  │  (decrypt)   │  │                        │  │
 │  │ - poll_int   │  │              │  │                        │  │
@@ -194,10 +195,11 @@ cargo run --bin client -- -c /etc/tds-client/client.toml run
 │                            │                                      │
 │         ┌──────────────────┼──────────────────┐                  │
 │         ▼                  ▼                  ▼                  │
-│  ┌─────────────┐   ┌─────────────┐   ┌─────────────────────┐    │
-│  │ Poll Loop   │   │  Decrypt &  │   │  Post-download      │    │
-│  │ (hash check)│   │  Verify     │   │  Actions            │    │
-│  └─────────────┘   └─────────────┘   └─────────────────────┘    │
+│  ┌─────────────┐   ┌──────────────┐   ┌─────────────────────┐   │
+│  │ Poll Loop   │   │  Resumable   │   │  Post-download      │   │
+│  │ (hash check)│   │  Chunk DL +  │   │  Actions            │   │
+│  │             │   │  Verify/Dec  │   │                     │   │
+│  └─────────────┘   └──────────────┘   └─────────────────────┘   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -209,7 +211,9 @@ cargo run --bin client -- -c /etc/tds-client/client.toml run
 |--------|------|------|---------|
 | GET | `/api/v1/health` | No | Health check |
 | GET | `/api/v1/manifest` | Client | Get file list with hashes |
-| GET | `/api/v1/files/{path}` | Client | Download encrypted file |
+| GET | `/api/v1/files/{path}` | Client | Download encrypted file (all chunks) |
+| GET | `/api/v1/files/{path}/chunks` | Client | Get chunk manifest for resumable download |
+| GET | `/api/v1/files/{path}/chunk/{index}` | Client | Download a single encrypted chunk |
 | POST | `/api/v1/enroll` | Token | Client enrollment |
 
 ### Admin Endpoints
@@ -235,6 +239,37 @@ X-Nonce: random_base64
 Authorization: Admin <password>
 X-TOTP-Code: 123456
 ```
+
+## Encryption
+
+Files are encrypted using a hybrid scheme:
+
+1. **Key exchange**: An ephemeral X25519 keypair is generated per file. ECDH with the client's stored X25519 public key produces a shared secret.
+2. **Key derivation**: The shared secret is fed into HKDF-SHA256 with a random 12-byte file nonce to produce a 256-bit AES key.
+3. **Chunked encryption**: The plaintext is split into 1 MB chunks. Each chunk is encrypted independently with AES-256-GCM using a per-chunk nonce (derived from the file nonce XOR'd with the chunk index) and the chunk index as authenticated additional data (AAD), which prevents chunk reordering.
+4. **Signing**: The server signs the chunk manifest and each full file response with Ed25519.
+
+This design means each chunk can be independently verified and decrypted, enabling resumable downloads.
+
+### Key File Formats
+
+| File | Format | Example |
+|------|--------|---------|
+| `server.x25519` / `client.x25519` | Text, `X25519-SECRET-KEY-1:<hex>` | `X25519-SECRET-KEY-1:9e7c...` |
+| `server_signing.key` | JSON, base64 | `{"private_key":"...","public_key":"..."}` |
+| `server_signing.pub` | JSON, base64 | `{"public_key":"..."}` |
+
+The `x25519_public_key` stored in server config per client uses the format `X25519-PUBLIC-KEY-1:<hex>`.
+
+## Resumable Downloads
+
+When downloading a file the client:
+
+1. Requests the chunk manifest (`GET /files/{path}/chunks`) which returns the number of chunks, the ephemeral public key, and a server signature.
+2. Downloads each chunk individually (`GET /files/{path}/chunk/{i}`), decrypts it in-place (AES-GCM authentication confirms chunk integrity), and writes it to a `.tds-tmp` file at the correct byte offset.
+3. Saves progress to the state file after each verified chunk. On restart, verified chunks are skipped.
+4. If the server re-encrypts the file (different ephemeral public key), progress is discarded and the download restarts.
+5. On completion, the temp file is atomically renamed to the final path and progress state is cleared.
 
 ## Deployment with Nginx
 
@@ -327,13 +362,24 @@ client -c client.toml sync
 client keygen -o /etc/tds-client/
 
 # Enroll with server
-client enroll --server "https://server:8443" --token "tds-enroll-v1:..." --config-dir /etc/tds-client/
+client enroll --server "https://server:8443" --token "tds-enroll-v2:..." --config-dir /etc/tds-client/
 ```
+
+## Migration from v0.2 (Age Encryption)
+
+Version 0.3 replaces Age encryption with AES-256-GCM. Existing deployments must:
+
+1. Regenerate all keys: `server keygen` and `client keygen` (or re-enroll)
+2. Update server config: rename `age_identity_path` → `x25519_identity_path` and `age_public_key` → `x25519_public_key` in all `[clients.*]` sections
+3. Update client config: rename `age_identity_path` → `x25519_identity_path`
+4. Replace `server.age` and `client.age` key files with the new `.x25519` files
+5. Re-enroll clients to exchange new public keys (`tds-enroll-v2` tokens are required; old `tds-enroll-v1` tokens are rejected)
 
 ## Security
 
-- **Encryption**: Files encrypted using age (X25519) per-client
-- **Signing**: Server signs all files with Ed25519; clients verify signatures
+- **Encryption**: X25519 ECDH key exchange + HKDF-SHA256 key derivation + AES-256-GCM per chunk
+- **Integrity**: AES-GCM authentication tag per chunk; chunk index bound into AAD to prevent reordering
+- **Signing**: Server signs manifests and file responses with Ed25519; clients verify before use
 - **Client authentication**: Clients sign requests with Ed25519; includes timestamp and nonce
 - **Admin authentication**: Password (Argon2id hash) + TOTP two-factor for token management
 - **Replay protection**: Nonce cache prevents request replay within 5-minute window

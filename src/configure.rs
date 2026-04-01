@@ -39,7 +39,10 @@ impl ServerConfig {
 
         // Key files must exist and be readable
         check_file_readable(&self.server.keys.signing_key_path, "signing_key_path")?;
-        check_file_readable(&self.server.keys.age_identity_path, "age_identity_path")?;
+        check_file_readable(
+            &self.server.keys.x25519_identity_path,
+            "x25519_identity_path",
+        )?;
 
         // Admin config (if present): validate password_hash and totp_secret are parseable
         if let Some(admin) = &self.server.admin {
@@ -88,10 +91,14 @@ impl ServerConfig {
                 );
             }
 
-            // age_public_key: must be a valid age recipient
-            encryption::AgeRecipient::from_str(&client.age_public_key).with_context(|| {
-                format!("Client {client_id:?}: age_public_key is not a valid age recipient")
-            })?;
+            // x25519_public_key: must be a valid X25519 recipient
+            encryption::X25519Recipient::from_str(&client.x25519_public_key).with_context(
+                || {
+                    format!(
+                        "Client {client_id:?}: x25519_public_key is not a valid X25519 recipient"
+                    )
+                },
+            )?;
         }
 
         // Client group references: every group a client references must exist
@@ -232,7 +239,7 @@ pub struct ProxyConfig {
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServerKeyConfig {
     pub signing_key_path: PathBuf,
-    pub age_identity_path: PathBuf,
+    pub x25519_identity_path: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -271,7 +278,7 @@ fn default_token_expiry() -> u32 {
 /// Client entry in server config
 #[derive(Clone, Debug, Deserialize)]
 pub struct ClientEntry {
-    pub age_public_key: String,
+    pub x25519_public_key: String,
     pub auth_public_key: String,
     pub groups: Vec<String>,
     pub enrolled_at: Option<String>,
@@ -309,10 +316,10 @@ bind = "127.0.0.1:8080"
 
 [server.keys]
 signing_key_path = "/etc/tds/server_signing.key"
-age_identity_path = "/etc/tds/server.age"
+x25519_identity_path = "/etc/tds/server.x25519"
 
 [clients.test-client]
-age_public_key = "age1test..."
+x25519_public_key = "X25519-PUBLIC-KEY-1:aabbcc"
 auth_public_key = "base64key"
 groups = ["production"]
 
