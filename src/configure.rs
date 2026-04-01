@@ -61,9 +61,23 @@ impl ServerConfig {
             check_file_readable(&tls.key_path, "TLS key_path")?;
         }
 
-        // Client auth_public_key: must be valid base64 decoding to 32 bytes (Ed25519)
+        // Client validation
         use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
         for (client_id, client) in &self.clients {
+            // client_id must be non-empty and contain only safe characters
+            if client_id.is_empty() {
+                anyhow::bail!("Client ID must not be empty");
+            }
+            if client_id
+                .chars()
+                .any(|c| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.')
+            {
+                anyhow::bail!(
+                    "Client {client_id:?}: ID contains invalid characters (allowed: alphanumeric, -, _, .)"
+                );
+            }
+
+            // auth_public_key: must be valid base64 decoding to 32 bytes (Ed25519)
             let key_bytes = BASE64.decode(&client.auth_public_key).with_context(|| {
                 format!("Client {client_id:?}: auth_public_key is not valid base64")
             })?;
@@ -73,6 +87,11 @@ impl ServerConfig {
                     key_bytes.len()
                 );
             }
+
+            // age_public_key: must be a valid age recipient
+            encryption::AgeRecipient::from_str(&client.age_public_key).with_context(|| {
+                format!("Client {client_id:?}: age_public_key is not a valid age recipient")
+            })?;
         }
 
         // Client group references: every group a client references must exist

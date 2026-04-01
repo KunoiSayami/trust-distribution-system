@@ -74,6 +74,8 @@ enum Commands {
         #[arg(long, default_value = "TDS")]
         issuer: String,
     },
+    /// Show clients and groups from config
+    Show,
 }
 
 #[derive(Subcommand)]
@@ -379,6 +381,37 @@ fn totp_setup_command(account: &str, issuer: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn show_command(config_path: PathBuf) -> anyhow::Result<()> {
+    let config = ServerConfig::load(&config_path)?;
+
+    println!("Groups ({}):", config.groups.len());
+    let mut group_names: Vec<&str> = config.groups.keys().map(|s| s.as_str()).collect();
+    group_names.sort();
+    for name in &group_names {
+        let group = &config.groups[*name];
+        println!("  {name} ({} path(s))", group.paths.len());
+        for path in &group.paths {
+            println!("    {path}");
+        }
+    }
+
+    println!("\nClients ({}):", config.clients.len());
+    let mut client_ids: Vec<&str> = config.clients.keys().map(|s| s.as_str()).collect();
+    client_ids.sort();
+    for id in &client_ids {
+        let client = &config.clients[*id];
+        let groups = if client.groups.is_empty() {
+            "(no groups)".to_string()
+        } else {
+            client.groups.join(", ")
+        };
+        let files = config.get_client_files(id).len();
+        println!("  {id}  groups=[{groups}]  files={files}");
+    }
+
+    Ok(())
+}
+
 async fn async_main(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Server) | None => run_server(cli.config).await,
@@ -393,6 +426,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Totp { secret }) => totp_command(&secret),
         Some(Commands::HashPassword { password }) => hash_password_command(&password),
         Some(Commands::TotpSetup { account, issuer }) => totp_setup_command(&account, &issuer),
+        Some(Commands::Show) => show_command(cli.config),
     }
 }
 
