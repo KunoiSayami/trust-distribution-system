@@ -330,14 +330,11 @@ impl TdsClient {
         let epk_bytes = hex::decode(&manifest.ephemeral_public_key)?;
         let nonce_bytes = hex::decode(&manifest.file_nonce)?;
 
-        let mut all_chunks: Vec<Option<Vec<u8>>> = vec![None; manifest.chunk_count as usize];
-
-        // Fill already-verified slots as sentinel (we'll read from tmp file)
-        for &idx in &verified {
-            if (idx as usize) < all_chunks.len() {
-                all_chunks[idx as usize] = Some(vec![]); // sentinel: already on disk
-            }
-        }
+        // Track total plaintext bytes written so we can truncate precisely at the end.
+        // For resumed downloads we don't know the sizes of already-written chunks, so we
+        // derive the known portion from (verified_count - 1) * chunk_size + last_chunk_size.
+        // We accumulate new_bytes_written for newly downloaded chunks, and combine on finish.
+        let mut last_chunk_plaintext_len: Option<usize> = None;
 
         for chunk_index in 0..manifest.chunk_count {
             if verified.contains(&chunk_index) {
@@ -345,8 +342,8 @@ impl TdsClient {
             }
 
             let url = format!(
-                "{}/api/v1/files/{}/chunk/{}",
-                self.server_url, path, chunk_index
+                "{}/api/v1/chunk/{}/{}",
+                self.server_url, chunk_index, path
             );
             let headers = self.auth_headers()?;
             let mut request = self.client.get(&url);
@@ -384,13 +381,16 @@ impl TdsClient {
             )
             .with_context(|| format!("Failed to decrypt chunk {chunk_index}"))?;
 
+            // Track last chunk size to compute exact total length after loop
+            if chunk_index == manifest.chunk_count - 1 {
+                last_chunk_plaintext_len = Some(plaintext.len());
+            }
+
             // Write chunk to correct offset in temp file
             use std::io::{Seek, SeekFrom, Write};
             let mut file = std::fs::OpenOptions::new().write(true).open(&tmp_path)?;
             file.seek(SeekFrom::Start(chunk_index * manifest.chunk_size as u64))?;
             file.write_all(&plaintext)?;
-
-            all_chunks[chunk_index as usize] = Some(plaintext);
 
             // Mark verified and persist state immediately
             verified.push(chunk_index);
@@ -407,46 +407,32 @@ impl TdsClient {
             state.save(state_path)?;
         }
 
-        // All chunks verified — reassemble and verify hash
-        // Read back from temp file (handles the resume case where some chunks were on disk)
-        let full_content = std::fs::read(&tmp_path)?;
-
-        // Trim trailing zeros from pre-allocation (last chunk may be shorter)
-        // The actual size = sum of decrypted chunk sizes, which we derive from the content hash.
-        // For simplicity we verify the sha256 hash from the manifest to confirm correctness.
-        let actual_hash = format!("sha256:{}", hex::encode(Sha256::digest(&full_content)));
-        // Note: the manifest.content_hash is sha256 of the plaintext before trailing trim.
-        // We store both trimmed and full and pick based on hash match.
-        // The correct approach: the last chunk's actual size tells us total size.
-        // We already wrote decrypted bytes at the right offsets so trailing zeros are padding.
-        // Re-read using the known plaintext size from chunk sizes.
-        //
-        // Simpler: trust that the hash matches if we truncate to the last written byte.
-        // Find the last non-zero byte (or use the actual total from chunk sizes).
-        // Since chunk sizes vary only for the last chunk, we use the content hash to validate.
-        let content_hash = &manifest.content_hash;
-
-        // Try exact match first (no padding)
-        let verified_content = if actual_hash == *content_hash {
-            full_content
+        // Compute exact file size: (chunk_count - 1) full chunks + last chunk actual size.
+        // last_chunk_plaintext_len is None only when all chunks were already verified (resume),
+        // in which case the tmp file already has the correct size from the previous run.
+        let exact_size = if let Some(last_len) = last_chunk_plaintext_len {
+            (manifest.chunk_count - 1) as u64 * manifest.chunk_size as u64 + last_len as u64
         } else {
-            // The last chunk wrote fewer bytes; the rest is pre-alloc zeros.
-            // Find correct size by trying progressive trim (at most one chunk worth).
-            let trim_start = full_content.len().saturating_sub(manifest.chunk_size);
-            let mut found = None;
-            for trim_len in 0..=manifest.chunk_size {
-                let trimmed = &full_content[..full_content.len() - trim_len];
-                let h = format!("sha256:{}", hex::encode(Sha256::digest(trimmed)));
-                if h == *content_hash {
-                    found = Some(trimmed.to_vec());
-                    break;
-                }
-                if trim_start + trim_len >= full_content.len() {
-                    break;
-                }
-            }
-            found.ok_or_else(|| anyhow!("Content hash mismatch after download"))?
+            // All chunks were pre-verified (pure resume with no new downloads).
+            // The tmp file was written correctly in a prior run; read it as-is.
+            std::fs::metadata(&tmp_path)?.len()
         };
+
+        // Truncate to exact size (removes pre-allocation padding from the last chunk slot)
+        {
+            let file = std::fs::OpenOptions::new().write(true).open(&tmp_path)?;
+            file.set_len(exact_size)?;
+        }
+
+        // Read back and verify hash
+        let verified_content = std::fs::read(&tmp_path)?;
+        let actual_hash = format!("sha256:{}", hex::encode(Sha256::digest(&verified_content)));
+        if actual_hash != manifest.content_hash {
+            return Err(anyhow!(
+                "Content hash mismatch: expected {}, got {actual_hash}",
+                manifest.content_hash
+            ));
+        }
 
         // Atomically rename temp to final
         tokio::fs::rename(&tmp_path, output_path).await?;
