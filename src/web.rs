@@ -92,16 +92,22 @@ async fn manifest_handler(
         }
     }
 
-    let timestamp = chrono::Utc::now().timestamp_millis();
-
     let manifest_data = serde_json::to_vec(&entries).unwrap_or_default();
-    let (signature, _) =
-        encryption::sign(&state.server_signing_key, &manifest_data).map_err(|e| {
+    let (signature, timestamp) = encryption::sign(&state.server_signing_key, &manifest_data)
+        .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(e.to_string(), "SIGN_ERROR")),
             )
         })?;
+
+    log::trace!(
+        "[manifest sign] timestamp={} data_len={} data_hex={} sig={}",
+        timestamp,
+        manifest_data.len(),
+        hex::encode(&manifest_data),
+        BASE64.encode(&signature),
+    );
 
     Ok(Json(ManifestResponse {
         version: 1,

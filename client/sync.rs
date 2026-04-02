@@ -1,5 +1,6 @@
 use anyhow::{Context, anyhow};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use hex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -166,12 +167,25 @@ impl TdsClient {
             return Err(anyhow!("Server error {}: {}", status, body));
         }
 
-        let manifest: ManifestResponse = response.json().await?;
+        let body_bytes = response.bytes().await?;
+        let manifest: ManifestResponse =
+            serde_json::from_slice(&body_bytes).context("Failed to parse manifest response")?;
 
+        // Re-serialize from the parsed struct to match what the server signed.
+        // Use the same serde_json compact format that the server uses.
         let manifest_data = serde_json::to_vec(&manifest.files)?;
+
         let signature = BASE64
             .decode(&manifest.signature)
             .context("Invalid manifest signature encoding")?;
+
+        log::trace!(
+            "[manifest verify] timestamp={} data_len={} data_hex={} sig={}",
+            manifest.timestamp,
+            manifest_data.len(),
+            hex::encode(&manifest_data),
+            BASE64.encode(&signature),
+        );
 
         let valid = encryption::verify(
             &self.server_verify_key,
@@ -236,10 +250,7 @@ impl TdsClient {
         chunk_index: u64,
         manifest: &ChunkManifestResponse,
     ) -> anyhow::Result<Vec<u8>> {
-        let url = format!(
-            "{}/api/v1/chunk/{}/{}",
-            self.server_url, chunk_index, path
-        );
+        let url = format!("{}/api/v1/chunk/{}/{}", self.server_url, chunk_index, path);
         let headers = self.auth_headers()?;
 
         let mut request = self.client.get(&url);
@@ -341,10 +352,7 @@ impl TdsClient {
                 continue;
             }
 
-            let url = format!(
-                "{}/api/v1/chunk/{}/{}",
-                self.server_url, chunk_index, path
-            );
+            let url = format!("{}/api/v1/chunk/{}/{}", self.server_url, chunk_index, path);
             let headers = self.auth_headers()?;
             let mut request = self.client.get(&url);
             for (key, value) in headers {
