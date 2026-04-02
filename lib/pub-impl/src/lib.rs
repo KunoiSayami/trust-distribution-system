@@ -47,18 +47,23 @@ pub struct ParsedToken {
 impl ParsedToken {
     /// Parse an enrollment token string
     pub fn parse(token: &str) -> anyhow::Result<Self> {
-        let parts: Vec<&str> = token.split(':').collect();
-        if parts.len() != 4 {
+        // Token format: tds-enroll-v2:SECRET:X25519-PUBLIC-KEY-1:<hex>:VERIFYKEY
+        // Use splitn(5) so the key prefix "X25519-PUBLIC-KEY-1:<hex>" is not split apart.
+        let parts: Vec<&str> = token.splitn(5, ':').collect();
+        if parts.len() != 5 {
             return Err(anyhow!("Invalid token format"));
         }
         if parts[0] != TOKEN_VERSION {
             return Err(anyhow!("Unsupported token version"));
         }
 
+        // Reassemble the recipient key: parts[2] + ":" + parts[3]
+        let server_x25519_recipient = format!("{}:{}", parts[2], parts[3]);
+
         Ok(Self {
             secret: parts[1].to_string(),
-            server_x25519_recipient: parts[2].to_string(),
-            server_verify_key: parts[3].to_string(),
+            server_x25519_recipient,
+            server_verify_key: parts[4].to_string(),
         })
     }
 

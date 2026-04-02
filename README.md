@@ -175,10 +175,8 @@ cargo run --bin client -- -c /etc/tds-client/client.toml run
 │                    │  HTTP API      │                           │
 │                    │  /manifest     │                           │
 │                    │  /files/{p}    │                           │
-│                    │  /files/{p}/   │                           │
-│                    │    chunks      │                           │
-│                    │  /files/{p}/   │                           │
-│                    │    chunk/{i}   │                           │
+│                    │  /chunks/{p}   │                           │
+│                    │  /chunk/{i}/{p}│                           │
 │                    └────────────────┘                           │
 └──────────────────────────────────────────────────────────────────┘
                              │
@@ -212,8 +210,8 @@ cargo run --bin client -- -c /etc/tds-client/client.toml run
 | GET | `/api/v1/health` | No | Health check |
 | GET | `/api/v1/manifest` | Client | Get file list with hashes |
 | GET | `/api/v1/files/{path}` | Client | Download encrypted file (all chunks) |
-| GET | `/api/v1/files/{path}/chunks` | Client | Get chunk manifest for resumable download |
-| GET | `/api/v1/files/{path}/chunk/{index}` | Client | Download a single encrypted chunk |
+| GET | `/api/v1/chunks/{path}` | Client | Get chunk manifest for resumable download |
+| GET | `/api/v1/chunk/{index}/{path}` | Client | Download a single encrypted chunk |
 | POST | `/api/v1/enroll` | Token | Client enrollment |
 
 ### Admin Endpoints
@@ -265,8 +263,8 @@ The `x25519_public_key` stored in server config per client uses the format `X255
 
 When downloading a file the client:
 
-1. Requests the chunk manifest (`GET /files/{path}/chunks`) which returns the number of chunks, the ephemeral public key, and a server signature.
-2. Downloads each chunk individually (`GET /files/{path}/chunk/{i}`), decrypts it in-place (AES-GCM authentication confirms chunk integrity), and writes it to a `.tds-tmp` file at the correct byte offset.
+1. Requests the chunk manifest (`GET /chunks/{path}`) which returns the number of chunks, the ephemeral public key, and a server signature.
+2. Downloads each chunk individually (`GET /chunk/{i}/{path}`), decrypts it in-place (AES-GCM authentication confirms chunk integrity), and writes it to a `.tds-tmp` file at the correct byte offset.
 3. Saves progress to the state file after each verified chunk. On restart, verified chunks are skipped.
 4. If the server re-encrypts the file (different ephemeral public key), progress is discarded and the download restarts.
 5. On completion, the temp file is atomically renamed to the final path and progress state is cleared.

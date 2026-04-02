@@ -28,8 +28,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/health", get(health_handler))
         .route("/api/v1/manifest", get(manifest_handler))
         .route("/api/v1/files/{*path}", get(file_handler))
-        .route("/api/v1/files/{*path}/chunks", get(chunk_manifest_handler))
-        .route("/api/v1/files/{*path}/chunk/{index}", get(chunk_handler))
+        .route("/api/v1/chunks/{*path}", get(chunk_manifest_handler))
+        .route("/api/v1/chunk/{index}/{*path}", get(chunk_handler))
         .route("/api/v1/enroll", post(enroll_handler))
         // Admin endpoints
         .route("/api/v1/admin/tokens", post(admin::admin_create_tokens))
@@ -288,7 +288,7 @@ async fn chunk_manifest_handler(
 async fn chunk_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((path, index)): Path<(String, u64)>,
+    Path((index, path)): Path<(u64, String)>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let client_id = authenticate_request(&state, &headers).await?;
 

@@ -188,7 +188,7 @@ impl TdsClient {
 
     /// Fetch the chunk manifest for a file (for resumable download)
     pub async fn fetch_chunk_manifest(&self, path: &str) -> anyhow::Result<ChunkManifestResponse> {
-        let url = format!("{}/api/v1/files/{}/chunks", self.server_url, path);
+        let url = format!("{}/api/v1/chunks/{}", self.server_url, path);
         let headers = self.auth_headers()?;
 
         let mut request = self.client.get(&url);
@@ -237,8 +237,8 @@ impl TdsClient {
         manifest: &ChunkManifestResponse,
     ) -> anyhow::Result<Vec<u8>> {
         let url = format!(
-            "{}/api/v1/files/{}/chunk/{}",
-            self.server_url, path, chunk_index
+            "{}/api/v1/chunk/{}/{}",
+            self.server_url, chunk_index, path
         );
         let headers = self.auth_headers()?;
 

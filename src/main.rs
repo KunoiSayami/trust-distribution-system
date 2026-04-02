@@ -15,6 +15,7 @@ use types::AppState;
 #[derive(Parser)]
 #[command(name = "tds")]
 #[command(about = "Trust Distribution System - Server")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

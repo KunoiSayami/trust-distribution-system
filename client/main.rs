@@ -15,6 +15,7 @@ use sync::{SyncState, TdsClient};
 #[derive(Parser)]
 #[command(name = "tds-client")]
 #[command(about = "Trust Distribution System - Client")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
