@@ -125,7 +125,7 @@ async fn sync_once(
     let to_download = sync::files_to_download(&manifest, state, subscribed_groups);
 
     if to_download.is_empty() {
-        log::info!("All files up to date");
+        log::debug!("All files up to date");
         return Ok(());
     }
 
@@ -134,7 +134,7 @@ async fn sync_once(
     let mut downloaded_files = Vec::new();
 
     for file in &to_download {
-        log::info!("Downloading: {}", file.path);
+        log::debug!("Downloading: {}", file.path);
 
         let output_path = match sync::get_output_path(file, config) {
             Some(p) => p,
@@ -159,7 +159,7 @@ async fn sync_once(
 
         match result {
             Ok(content) => {
-                log::info!("Wrote {} ({} bytes)", output_path.display(), content.len());
+                log::debug!("Wrote {} ({} bytes)", output_path.display(), content.len());
 
                 state.file_metadata.insert(
                     file.path.clone(),
@@ -183,7 +183,7 @@ async fn sync_once(
     state.save(&config.client.state_file)?;
 
     if !downloaded_files.is_empty() {
-        log::info!("Executing post-download actions...");
+        log::debug!("Executing post-download actions...");
         if let Err(e) = actions::execute_actions(&downloaded_files, config) {
             log::error!("Action execution failed: {e:?}");
         }
