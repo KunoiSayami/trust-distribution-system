@@ -1,5 +1,8 @@
-use crate::types::{ChunkedEncrypted, KeyStore, SigningKey, VerifyingKey, X25519Identity, X25519Recipient, CHUNK_SIZE};
 use crate::Content;
+use crate::types::{
+    CHUNK_SIZE, ChunkedEncrypted, KeyStore, SigningKey, VerifyingKey, X25519Identity,
+    X25519Recipient,
+};
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
     aead::{Aead, AeadCore, KeyInit, Payload},
@@ -131,7 +134,13 @@ pub fn encrypt(recipient: &X25519Recipient, plain: Vec<u8>) -> anyhow::Result<Co
         let nonce = Nonce::from_slice(&nonce_arr);
         let aad = (i as u64).to_be_bytes();
         let ciphertext = cipher
-            .encrypt(nonce, Payload { msg: chunk, aad: &aad })
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: chunk,
+                    aad: &aad,
+                },
+            )
             .map_err(|_| anyhow!("AES-GCM encryption failed for chunk {i}"))?;
         chunks.push(ciphertext);
     }
@@ -160,7 +169,8 @@ pub fn decrypt(identity: &X25519Identity, payload: &ChunkedEncrypted) -> anyhow:
         .try_into()
         .map_err(|_| anyhow!("file_nonce must be 12 bytes"))?;
 
-    let mut file_key = derive_file_key(identity, &payload.ephemeral_public_key, &payload.file_nonce)?;
+    let mut file_key =
+        derive_file_key(identity, &payload.ephemeral_public_key, &payload.file_nonce)?;
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&file_key));
 
     let mut plaintext = Vec::new();
@@ -169,8 +179,16 @@ pub fn decrypt(identity: &X25519Identity, payload: &ChunkedEncrypted) -> anyhow:
         let nonce = Nonce::from_slice(&nonce_arr);
         let aad = (i as u64).to_be_bytes();
         let chunk = cipher
-            .decrypt(nonce, Payload { msg: ciphertext.as_slice(), aad: &aad })
-            .map_err(|_| anyhow!("AES-GCM decryption failed for chunk {i}: authentication error"))?;
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: ciphertext.as_slice(),
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| {
+                anyhow!("AES-GCM decryption failed for chunk {i}: authentication error")
+            })?;
         plaintext.extend_from_slice(&chunk);
     }
 
@@ -190,27 +208,41 @@ pub fn decrypt_chunk(
         .try_into()
         .map_err(|_| anyhow!("file_nonce must be 12 bytes"))?;
 
-    let ciphertext = payload
-        .chunks
-        .get(chunk_index)
-        .ok_or_else(|| anyhow!("Chunk index {chunk_index} out of range (count: {})", payload.chunk_count))?;
+    let ciphertext = payload.chunks.get(chunk_index).ok_or_else(|| {
+        anyhow!(
+            "Chunk index {chunk_index} out of range (count: {})",
+            payload.chunk_count
+        )
+    })?;
 
-    let mut file_key = derive_file_key(identity, &payload.ephemeral_public_key, &payload.file_nonce)?;
+    let mut file_key =
+        derive_file_key(identity, &payload.ephemeral_public_key, &payload.file_nonce)?;
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&file_key));
 
     let nonce_arr = chunk_nonce(&file_nonce_arr, chunk_index as u64);
     let nonce = Nonce::from_slice(&nonce_arr);
     let aad = (chunk_index as u64).to_be_bytes();
     let chunk = cipher
-        .decrypt(nonce, Payload { msg: ciphertext.as_slice(), aad: &aad })
-        .map_err(|_| anyhow!("AES-GCM decryption failed for chunk {chunk_index}: authentication error"))?;
+        .decrypt(
+            nonce,
+            Payload {
+                msg: ciphertext.as_slice(),
+                aad: &aad,
+            },
+        )
+        .map_err(|_| {
+            anyhow!("AES-GCM decryption failed for chunk {chunk_index}: authentication error")
+        })?;
 
     file_key.zeroize();
     Ok(chunk)
 }
 
 /// Decrypt using KeyStore's X25519 identity (convenience function)
-pub fn decrypt_with_keystore(key: &KeyStore, payload: &ChunkedEncrypted) -> anyhow::Result<Content> {
+pub fn decrypt_with_keystore(
+    key: &KeyStore,
+    payload: &ChunkedEncrypted,
+) -> anyhow::Result<Content> {
     let identity = key
         .x25519_identity
         .as_ref()

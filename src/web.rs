@@ -14,10 +14,10 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::admin;
-use crate::configure::ClientEntry;
+use crate::configure::{ClientEntry, ServerConfig};
 use crate::types::{
     AppState, CachedEncryption, EnrollPayload, EnrollRequest, EnrollResponse, ErrorResponse,
-    HealthResponse, ManifestDirectives, ManifestFileEntry, ManifestResponse,
+    HealthResponse, ManifestBinaryEntry, ManifestDirectives, ManifestFileEntry, ManifestResponse,
 };
 
 const CHUNK_CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
@@ -112,12 +112,49 @@ async fn manifest_handler(
     }
     let directives = ManifestDirectives(directives_map);
 
-    // Sign files_json || directives_json so the directives cannot be tampered with.
+    // Build binary entries for this client
+    let binary_infos = config.get_client_binaries(&client_id);
+    let mut binary_entries: Vec<ManifestBinaryEntry> = Vec::new();
+    for binary_info in binary_infos {
+        let metadata = match tokio::fs::metadata(&binary_info.source_path).await {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!(
+                    "Failed to read metadata for binary {}: {e}",
+                    binary_info.source_path.display()
+                );
+                continue;
+            }
+        };
+
+        let modified_at = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        if let Ok(content) = tokio::fs::read(&binary_info.source_path).await {
+            let hash = format!("sha256:{}", hex::encode(Sha256::digest(&content)));
+            binary_entries.push(ManifestBinaryEntry {
+                path: format!("__binary__/{}", binary_info.name),
+                name: binary_info.name,
+                content_hash: hash,
+                size: content.len() as u64,
+                modified_at,
+            });
+        }
+    }
+
+    // Sign files_json || directives_json || binaries_json
     let files_data = serde_json::to_vec(&entries).unwrap_or_default();
     let directives_data = serde_json::to_vec(&directives).unwrap_or_default();
-    let mut manifest_data = Vec::with_capacity(files_data.len() + directives_data.len());
+    let binaries_data = serde_json::to_vec(&binary_entries).unwrap_or_default();
+    let mut manifest_data =
+        Vec::with_capacity(files_data.len() + directives_data.len() + binaries_data.len());
     manifest_data.extend_from_slice(&files_data);
     manifest_data.extend_from_slice(&directives_data);
+    manifest_data.extend_from_slice(&binaries_data);
 
     let (signature, timestamp) = encryption::sign(&state.server_signing_key, &manifest_data)
         .map_err(|e| {
@@ -128,20 +165,45 @@ async fn manifest_handler(
         })?;
 
     log::trace!(
-        "[manifest sign] timestamp={} files_len={} directives_len={} sig={}",
+        "[manifest sign] timestamp={} files_len={} directives_len={} binaries_len={} sig={}",
         timestamp,
         files_data.len(),
         directives_data.len(),
+        binaries_data.len(),
         BASE64.encode(&signature),
     );
 
     Ok(Json(ManifestResponse {
-        version: 2,
+        version: 3,
         timestamp,
         files: entries,
         directives,
+        binaries: binary_entries,
         signature: BASE64.encode(&signature),
     }))
+}
+
+/// Resolve a virtual download path to a source file path on disk.
+/// Regular file paths are looked up via `get_client_files`; paths starting with
+/// `__binary__/` are resolved via `get_client_binaries`.
+fn resolve_source_path(
+    config: &ServerConfig,
+    client_id: &str,
+    path: &str,
+) -> Option<std::path::PathBuf> {
+    if let Some(name) = path.strip_prefix("__binary__/") {
+        config
+            .get_client_binaries(client_id)
+            .into_iter()
+            .find(|b| b.name == name)
+            .map(|b| b.source_path)
+    } else {
+        config
+            .get_client_files(client_id)
+            .into_iter()
+            .find(|f| f.relative_path == path)
+            .map(|f| f.source_path)
+    }
 }
 
 /// Get or populate the chunk cache for a (client_id, path) pair.
@@ -177,21 +239,16 @@ async fn get_or_populate_cache(
             )
         })?;
 
-    let files = config.get_client_files(client_id);
-    let file_info = files
-        .iter()
-        .find(|f| f.relative_path == path)
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new("File not found", "FILE_NOT_FOUND")),
-            )
-        })?
-        .clone();
+    let source_path = resolve_source_path(&config, client_id, path).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new("File not found", "FILE_NOT_FOUND")),
+        )
+    })?;
 
     drop(config);
 
-    let content = tokio::fs::read(&file_info.source_path).await.map_err(|e| {
+    let content = tokio::fs::read(&source_path).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse::new(e.to_string(), "READ_ERROR")),
@@ -639,6 +696,7 @@ async fn enroll_handler(
         auth_public_key: payload.auth_public_key,
         groups: groups.clone(),
         enrolled_at: Some(chrono::Utc::now().to_rfc3339()),
+        binaries: vec![],
     };
 
     {

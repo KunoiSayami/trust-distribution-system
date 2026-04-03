@@ -14,6 +14,8 @@ pub struct ServerConfig {
     pub clients: HashMap<String, ClientEntry>,
     #[serde(default)]
     pub groups: HashMap<String, GroupConfig>,
+    #[serde(default)]
+    pub binaries: HashMap<String, BinaryAsset>,
 }
 
 impl ServerConfig {
@@ -123,6 +125,20 @@ impl ServerConfig {
             }
         }
 
+        // Binary assets: each path must exist and be readable
+        for (name, asset) in &self.binaries {
+            check_file_readable(&asset.path, &format!("Binary {name:?} path"))?;
+        }
+
+        // Client binary references: every name a client references must exist in self.binaries
+        for (client_id, client) in &self.clients {
+            for binary_name in &client.binaries {
+                if !self.binaries.contains_key(binary_name) {
+                    anyhow::bail!("Client {client_id:?} references unknown binary {binary_name:?}");
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -169,6 +185,23 @@ impl ServerConfig {
             }
         }
         files
+    }
+
+    /// Get all binary assets available for a specific client
+    pub fn get_client_binaries(&self, client_id: &str) -> Vec<BinaryFileInfo> {
+        let Some(client) = self.clients.get(client_id) else {
+            return vec![];
+        };
+        client
+            .binaries
+            .iter()
+            .filter_map(|name| {
+                self.binaries.get(name).map(|asset| BinaryFileInfo {
+                    name: name.clone(),
+                    source_path: asset.path.clone(),
+                })
+            })
+            .collect()
     }
 
     /// Recursively scan a directory and return (source_path, relative_path) pairs
@@ -282,6 +315,9 @@ pub struct ClientEntry {
     pub auth_public_key: String,
     pub groups: Vec<String>,
     pub enrolled_at: Option<String>,
+    /// Names of binary assets assigned to this client
+    #[serde(default)]
+    pub binaries: Vec<String>,
 }
 
 /// Group configuration
@@ -294,12 +330,27 @@ pub struct GroupConfig {
     pub paths: Vec<String>,
 }
 
+/// Named binary asset available for distribution
+#[derive(Clone, Debug, Deserialize)]
+pub struct BinaryAsset {
+    #[allow(unused)]
+    pub description: Option<String>,
+    pub path: PathBuf,
+}
+
 /// File info for serving
 #[derive(Clone, Debug)]
 pub struct FileInfo {
     pub source_path: PathBuf,
     pub relative_path: String,
     pub group: String,
+}
+
+/// Binary asset info for serving
+#[derive(Clone, Debug)]
+pub struct BinaryFileInfo {
+    pub name: String,
+    pub source_path: PathBuf,
 }
 
 #[cfg(test)]

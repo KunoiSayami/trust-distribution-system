@@ -156,6 +156,9 @@ pub struct ManifestResponse {
     /// deserialize it as the default (empty map) and ignore it entirely.
     #[serde(default)]
     pub directives: ManifestDirectives,
+    /// Binary assets available for this client. Old clients ignore this field.
+    #[serde(default)]
+    pub binaries: Vec<ManifestBinaryEntry>,
     pub signature: String,
 }
 
@@ -166,6 +169,20 @@ pub struct ManifestFileEntry {
     pub size: u64,
     pub group: String,
     /// File modification timestamp (Unix seconds)
+    pub modified_at: i64,
+}
+
+/// A named binary asset entry in the manifest.
+/// `path` is the virtual download path (`__binary__/<name>`) used with the
+/// existing chunk endpoints; `name` is the logical identifier from the server config.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ManifestBinaryEntry {
+    pub name: String,
+    pub path: String,
+    pub content_hash: String,
+    pub size: u64,
+    /// File modification timestamp (Unix seconds)
+    #[serde(default)]
     pub modified_at: i64,
 }
 

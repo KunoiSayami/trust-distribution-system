@@ -299,11 +299,11 @@ impl X25519Identity {
 
     /// Parse from stored string: "X25519-SECRET-KEY-1:<lowercase hex of 32 bytes>"
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
-        let hex_part = s
-            .strip_prefix("X25519-SECRET-KEY-1:")
-            .ok_or_else(|| anyhow::anyhow!("Invalid X25519 identity string (expected X25519-SECRET-KEY-1: prefix)"))?;
-        let bytes = hex::decode(hex_part)
-            .map_err(|_| anyhow::anyhow!("Invalid hex in X25519 identity"))?;
+        let hex_part = s.strip_prefix("X25519-SECRET-KEY-1:").ok_or_else(|| {
+            anyhow::anyhow!("Invalid X25519 identity string (expected X25519-SECRET-KEY-1: prefix)")
+        })?;
+        let bytes =
+            hex::decode(hex_part).map_err(|_| anyhow::anyhow!("Invalid hex in X25519 identity"))?;
         let bytes: [u8; 32] = bytes
             .try_into()
             .map_err(|_| anyhow::anyhow!("X25519 secret key must be 32 bytes"))?;
@@ -314,7 +314,10 @@ impl X25519Identity {
 
     /// Serialize to stored string: "X25519-SECRET-KEY-1:<lowercase hex>"
     pub fn to_string(&self) -> String {
-        format!("X25519-SECRET-KEY-1:{}", hex::encode(self.secret.as_bytes()))
+        format!(
+            "X25519-SECRET-KEY-1:{}",
+            hex::encode(self.secret.as_bytes())
+        )
     }
 
     /// Get the public recipient for this identity
@@ -342,9 +345,11 @@ pub struct X25519Recipient(x25519_dalek::PublicKey);
 impl X25519Recipient {
     /// Parse from stored string: "X25519-PUBLIC-KEY-1:<lowercase hex of 32 bytes>"
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
-        let hex_part = s
-            .strip_prefix("X25519-PUBLIC-KEY-1:")
-            .ok_or_else(|| anyhow::anyhow!("Invalid X25519 recipient string (expected X25519-PUBLIC-KEY-1: prefix)"))?;
+        let hex_part = s.strip_prefix("X25519-PUBLIC-KEY-1:").ok_or_else(|| {
+            anyhow::anyhow!(
+                "Invalid X25519 recipient string (expected X25519-PUBLIC-KEY-1: prefix)"
+            )
+        })?;
         let bytes = hex::decode(hex_part)
             .map_err(|_| anyhow::anyhow!("Invalid hex in X25519 recipient"))?;
         let bytes: [u8; 32] = bytes

@@ -12,6 +12,8 @@ pub struct ClientConfig {
     pub subscriptions: HashMap<String, Subscription>,
     #[serde(default)]
     pub actions: ActionsConfig,
+    #[serde(default)]
+    pub binaries: HashMap<String, BinarySubscription>,
 }
 
 impl ClientConfig {
@@ -60,6 +62,15 @@ pub struct Subscription {
 
 fn default_true() -> bool {
     true
+}
+
+/// Subscription to a named binary asset
+#[derive(Clone, Debug, Deserialize)]
+pub struct BinarySubscription {
+    pub output_path: PathBuf,
+    /// Set executable bit after download (Unix only). Defaults to true.
+    #[serde(default = "default_true")]
+    pub make_executable: bool,
 }
 
 /// Actions configuration

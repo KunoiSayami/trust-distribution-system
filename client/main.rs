@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use pub_impl::{EnrollPayload, EnrollRequest, EnrollResponse, ParsedToken, init_log};
 
 mod actions;
+mod binaries;
 mod config;
 mod sync;
 
@@ -179,6 +180,56 @@ async fn sync_once(
         }
     }
 
+    // Download binary assets
+    let subscribed_binaries: Vec<String> = config.binaries.keys().cloned().collect();
+    let binaries_to_get = sync::binaries_to_download(&manifest, state, &subscribed_binaries);
+
+    for binary_entry in &binaries_to_get {
+        let Some(sub) = config.binaries.get(&binary_entry.name) else {
+            continue;
+        };
+
+        let output_path = &sub.output_path;
+        if let Some(parent) = output_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        let result = client
+            .download_file_resumable(
+                &binary_entry.path,
+                state,
+                &config.client.state_file,
+                output_path,
+            )
+            .await;
+
+        match result {
+            Ok(_) => {
+                log::info!(
+                    "Downloaded binary {} to {}",
+                    binary_entry.name,
+                    output_path.display()
+                );
+                state.file_metadata.insert(
+                    binary_entry.path.clone(),
+                    sync::FileMetadata {
+                        content_hash: binary_entry.content_hash.clone(),
+                        modified_at: binary_entry.modified_at,
+                    },
+                );
+                if let Err(e) = binaries::apply_post_download(sub, output_path) {
+                    log::error!(
+                        "Post-download action failed for binary {}: {e}",
+                        binary_entry.name
+                    );
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to download binary {}: {e}", binary_entry.name);
+            }
+        }
+    }
+
     // Advance stored force-sync tokens for groups where all downloads succeeded.
     // If any file in a group failed, keep the old token so the next poll retries.
     let failed_groups: std::collections::HashSet<&str> = to_download
@@ -333,6 +384,11 @@ server_verify_key = "{}"
 # command = "/path/to/script"
 # args = []
 # on_change_only = true
+
+# TODO: Configure binary assets (if any are assigned to this client)
+# [binaries.asset-name]
+# output_path = "/usr/local/bin/asset-name"
+# make_executable = true
 "#,
         enroll_response.client_id,
         config_dir.join("state.json").display(),

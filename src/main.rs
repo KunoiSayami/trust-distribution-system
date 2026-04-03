@@ -490,6 +490,14 @@ fn show_command(config_path: PathBuf) -> anyhow::Result<()> {
         }
     }
 
+    println!("\nBinaries ({}):", config.binaries.len());
+    let mut binary_names: Vec<&str> = config.binaries.keys().map(|s| s.as_str()).collect();
+    binary_names.sort();
+    for name in &binary_names {
+        let asset = &config.binaries[*name];
+        println!("  {name} → {}", asset.path.display());
+    }
+
     println!("\nClients ({}):", config.clients.len());
     let mut client_ids: Vec<&str> = config.clients.keys().map(|s| s.as_str()).collect();
     client_ids.sort();
@@ -500,8 +508,13 @@ fn show_command(config_path: PathBuf) -> anyhow::Result<()> {
         } else {
             client.groups.join(", ")
         };
+        let binaries = if client.binaries.is_empty() {
+            String::new()
+        } else {
+            format!("  binaries=[{}]", client.binaries.join(", "))
+        };
         let files = config.get_client_files(id).len();
-        println!("  {id}  groups=[{groups}]  files={files}");
+        println!("  {id}  groups=[{groups}]{binaries}  files={files}");
     }
 
     Ok(())

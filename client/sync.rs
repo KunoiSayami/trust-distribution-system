@@ -47,7 +47,22 @@ pub struct ManifestResponse {
     /// Per-group directives. Defaults to empty map for v1 server compatibility.
     #[serde(default)]
     pub directives: ManifestDirectives,
+    /// Binary assets available for this client. Empty for v1/v2 servers.
+    #[serde(default)]
+    pub binaries: Vec<ManifestBinaryEntry>,
     pub signature: String,
+}
+
+/// A named binary asset entry in the manifest.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ManifestBinaryEntry {
+    pub name: String,
+    /// Virtual download path: `__binary__/<name>`
+    pub path: String,
+    pub content_hash: String,
+    pub size: u64,
+    #[serde(default)]
+    pub modified_at: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -213,9 +228,20 @@ impl TdsClient {
             serde_json::from_slice(&body_bytes).context("Failed to parse manifest response")?;
 
         // Re-serialize from the parsed struct to match what the server signed.
-        // v2+: sign payload is files_json || directives_json (concatenated).
+        // v3+: sign payload is files_json || directives_json || binaries_json.
+        // v2:  sign payload is files_json || directives_json.
         // v1:  sign payload is files_json only (backward compatibility).
-        let manifest_data = if manifest.version >= 2 {
+        let manifest_data = if manifest.version >= 3 {
+            let files_data = serde_json::to_vec(&manifest.files)?;
+            let directives_data = serde_json::to_vec(&manifest.directives)?;
+            let binaries_data = serde_json::to_vec(&manifest.binaries)?;
+            let mut combined =
+                Vec::with_capacity(files_data.len() + directives_data.len() + binaries_data.len());
+            combined.extend_from_slice(&files_data);
+            combined.extend_from_slice(&directives_data);
+            combined.extend_from_slice(&binaries_data);
+            combined
+        } else if manifest.version >= 2 {
             let files_data = serde_json::to_vec(&manifest.files)?;
             let directives_data = serde_json::to_vec(&manifest.directives)?;
             let mut combined = Vec::with_capacity(files_data.len() + directives_data.len());
@@ -635,4 +661,29 @@ pub fn get_output_path(file: &ManifestFileEntry, config: &ClientConfig) -> Optio
     };
 
     Some(path)
+}
+
+/// Determine which binary assets need to be downloaded
+pub fn binaries_to_download(
+    manifest: &ManifestResponse,
+    state: &SyncState,
+    subscribed_names: &[String],
+) -> Vec<ManifestBinaryEntry> {
+    manifest
+        .binaries
+        .iter()
+        .filter(|binary| {
+            if !subscribed_names.contains(&binary.name) {
+                return false;
+            }
+            match state.file_metadata.get(&binary.path) {
+                Some(existing) => {
+                    existing.modified_at != binary.modified_at
+                        || existing.content_hash != binary.content_hash
+                }
+                None => true,
+            }
+        })
+        .cloned()
+        .collect()
 }
