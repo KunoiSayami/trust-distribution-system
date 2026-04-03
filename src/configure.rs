@@ -190,9 +190,7 @@ impl ServerConfig {
                 let relative = entry
                     .path()
                     .strip_prefix(&dir_path)
-                    .map(|p| {
-                        format!("{}/{}", dir_name, p.to_string_lossy()).replace('\\', "/")
-                    })
+                    .map(|p| format!("{}/{}", dir_name, p.to_string_lossy()).replace('\\', "/"))
                     .unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
                 results.push((source, relative));
             }

@@ -221,6 +221,8 @@ cargo run --bin client -- -c /etc/tds-client/client.toml run
 | POST | `/api/v1/admin/tokens` | Admin | Create enrollment tokens |
 | GET | `/api/v1/admin/tokens` | Admin | List pending tokens |
 | DELETE | `/api/v1/admin/tokens/{client_id}` | Admin | Revoke tokens for client |
+| POST | `/api/v1/admin/groups/{group}/force-sync` | Admin | Activate force re-download for a group |
+| DELETE | `/api/v1/admin/groups/{group}/force-sync` | Admin | Clear force-sync for a group |
 
 ### Client Authentication Headers
 
@@ -268,6 +270,25 @@ When downloading a file the client:
 3. Saves progress to the state file after each verified chunk. On restart, verified chunks are skipped.
 4. If the server re-encrypts the file (different ephemeral public key), progress is discarded and the download restarts.
 5. On completion, the temp file is atomically renamed to the final path and progress state is cleared.
+
+## Force Sync
+
+Admins can force all clients subscribed to a group to re-download every file in
+that group on their next sync cycle, regardless of whether the content has changed.
+This is useful for testing the end-to-end distribution pipeline.
+
+```bash
+# Trigger a force re-download for a group
+server group -p <password> -c server.toml force-sync --group production
+
+# Clear the flag (clients return to normal hash-based change detection)
+server group -p <password> -c server.toml clear-force-sync --group production
+```
+
+The force-sync token is embedded in the signed manifest, so it cannot be injected
+by a third party. It is transient — cleared automatically when the server restarts.
+Clients record the token in their state file once all files in the group are
+successfully downloaded, preventing repeated re-downloads on subsequent polls.
 
 ## Deployment with Nginx
 
@@ -337,6 +358,10 @@ server token -p <password> [-s <server>] [-c <config>] [-t <totp>] new \
   --client-id "web-01" --groups "production,web-servers" [--count <n>] [--expiry <hours>]
 server token -p <password> [-s <server>] [-c <config>] [-t <totp>] list
 server token -p <password> [-s <server>] [-c <config>] [-t <totp>] revoke --client-id "web-01"
+
+# Group management (via HTTP to running server, requires admin credentials)
+server group -p <password> [-s <server>] [-c <config>] [-t <totp>] force-sync --group <name>
+server group -p <password> [-s <server>] [-c <config>] [-t <totp>] clear-force-sync --group <name>
 
 # Utility commands for admin setup
 server hash-password <password>              # Generate Argon2id hash for config

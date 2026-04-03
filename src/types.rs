@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,6 +12,41 @@ use crate::enrollment::TokenStore;
 
 // Re-export shared types from pub-impl
 pub use pub_impl::{EnrollPayload, EnrollRequest, EnrollResponse};
+
+/// Per-group server directives included in the manifest.
+/// New optional fields may be added here in the future; all must use `#[serde(default)]`
+/// so old clients silently ignore additions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GroupDirectives {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_sync_token: Option<String>,
+    // Future per-group fields go here with #[serde(default)]
+}
+
+impl GroupDirectives {
+    #[allow(dead_code)]
+    pub fn force_sync_token(&self) -> Option<&str> {
+        self.force_sync_token.as_deref()
+    }
+}
+
+/// Top-level directives map included in the manifest, keyed by group name.
+/// Uses `BTreeMap` to guarantee deterministic key order for signature verification.
+/// `#[serde(default)]` ensures old clients that don't know this field get an empty map.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ManifestDirectives(pub BTreeMap<String, GroupDirectives>);
+
+impl ManifestDirectives {
+    #[allow(dead_code)]
+    pub fn get(&self, group: &str) -> Option<&GroupDirectives> {
+        self.0.get(group)
+    }
+
+    #[allow(dead_code)]
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &GroupDirectives)> {
+        self.0.iter()
+    }
+}
 
 /// Cached per-client encrypted file (keyed by (client_id, relative_path))
 pub struct CachedEncryption {
@@ -29,6 +65,10 @@ pub struct AppState {
     pub chunk_cache: Arc<DashMap<(String, String), CachedEncryption>>,
     pub token_store: Arc<RwLock<TokenStore>>,
     pub config_path: PathBuf,
+    /// In-memory force-sync tokens: group name → active directives.
+    /// Absent entry means no active directives for that group.
+    /// Intentionally transient — cleared on server restart.
+    pub group_directives: Arc<DashMap<String, GroupDirectives>>,
 }
 
 impl AppState {
@@ -47,7 +87,12 @@ impl AppState {
             chunk_cache: Arc::new(DashMap::new()),
             token_store: Arc::new(RwLock::new(token_store)),
             config_path,
+            group_directives: Arc::new(DashMap::new()),
         }
+    }
+
+    pub fn group_directives(&self) -> &DashMap<String, GroupDirectives> {
+        &self.group_directives
     }
 }
 
@@ -107,6 +152,10 @@ pub struct ManifestResponse {
     pub version: u32,
     pub timestamp: i64,
     pub files: Vec<ManifestFileEntry>,
+    /// Per-group directives. Old clients that don't know this field will
+    /// deserialize it as the default (empty map) and ignore it entirely.
+    #[serde(default)]
+    pub directives: ManifestDirectives,
     pub signature: String,
 }
 

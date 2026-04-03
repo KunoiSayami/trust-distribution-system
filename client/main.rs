@@ -179,6 +179,24 @@ async fn sync_once(
         }
     }
 
+    // Advance stored force-sync tokens for groups where all downloads succeeded.
+    // If any file in a group failed, keep the old token so the next poll retries.
+    let failed_groups: std::collections::HashSet<&str> = to_download
+        .iter()
+        .filter(|f| !downloaded_files.iter().any(|d| d.path == f.path))
+        .map(|f| f.group.as_str())
+        .collect();
+
+    for (group, directives) in manifest.directives.iter() {
+        if let Some(token) = directives.force_sync_token() {
+            if !failed_groups.contains(group.as_str()) {
+                state
+                    .force_sync_tokens
+                    .insert(group.clone(), token.to_string());
+            }
+        }
+    }
+
     state.last_sync = Some(chrono::Utc::now().timestamp_millis());
     state.save(&config.client.state_file)?;
 

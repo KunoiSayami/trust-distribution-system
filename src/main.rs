@@ -77,6 +77,43 @@ enum Commands {
     },
     /// Show clients and groups from config
     Show,
+    /// Group management (via HTTP to running server)
+    Group {
+        #[command(subcommand)]
+        action: GroupAction,
+
+        /// Server config file (to auto-read TOTP secret and bind address)
+        #[arg(long, short = 'c')]
+        config: Option<PathBuf>,
+
+        /// Server URL (overrides config bind address)
+        #[arg(long, short = 's', default_value = "http://127.0.0.1:8080")]
+        server: String,
+
+        /// Admin password
+        #[arg(long, short = 'p')]
+        password: String,
+
+        /// TOTP code (auto-generated if --config provided with admin section)
+        #[arg(long, short = 't')]
+        totp: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum GroupAction {
+    /// Force all clients subscribed to a group to re-download files on next sync
+    ForceSync {
+        /// Group name to target
+        #[arg(long)]
+        group: String,
+    },
+    /// Clear the force-sync flag for a group, restoring normal sync behaviour
+    ClearForceSync {
+        /// Group name to target
+        #[arg(long)]
+        group: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -383,6 +420,62 @@ fn totp_setup_command(account: &str, issuer: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn group_command(
+    action: GroupAction,
+    config_path: Option<PathBuf>,
+    server_arg: String,
+    password: String,
+    totp_arg: Option<String>,
+) -> anyhow::Result<()> {
+    let (server_url, totp_code) = resolve_admin_credentials(&config_path, &server_arg, &totp_arg)?;
+
+    let client = reqwest::Client::new();
+
+    match action {
+        GroupAction::ForceSync { group } => {
+            let response = client
+                .post(format!(
+                    "{server_url}/api/v1/admin/groups/{group}/force-sync"
+                ))
+                .header("Authorization", format!("Admin {password}"))
+                .header("X-TOTP-Code", &totp_code)
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let result: serde_json::Value = response.json().await?;
+                println!(
+                    "Force-sync activated for group '{}'. Token: {}",
+                    result["group"].as_str().unwrap_or(""),
+                    result["force_sync_token"].as_str().unwrap_or("(none)"),
+                );
+            } else {
+                let error: serde_json::Value = response.json().await?;
+                anyhow::bail!("Failed to set force-sync: {}", error["error"]);
+            }
+        }
+        GroupAction::ClearForceSync { group } => {
+            let response = client
+                .delete(format!(
+                    "{server_url}/api/v1/admin/groups/{group}/force-sync"
+                ))
+                .header("Authorization", format!("Admin {password}"))
+                .header("X-TOTP-Code", &totp_code)
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                println!("Force-sync cleared for group '{group}'.");
+            } else {
+                let error: serde_json::Value = response.json().await?;
+                anyhow::bail!("Failed to clear force-sync: {}", error["error"]);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn show_command(config_path: PathBuf) -> anyhow::Result<()> {
     let config = ServerConfig::load(&config_path)?;
 
@@ -429,6 +522,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::HashPassword { password }) => hash_password_command(&password),
         Some(Commands::TotpSetup { account, issuer }) => totp_setup_command(&account, &issuer),
         Some(Commands::Show) => show_command(cli.config),
+        Some(Commands::Group {
+            action,
+            config,
+            server,
+            password,
+            totp,
+        }) => group_command(action, config, server, password, totp).await,
     }
 }
 

@@ -4,18 +4,49 @@ use hex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use crate::config::ClientConfig;
 
+/// Per-group server directives included in the manifest.
+/// New optional fields may be added in future; all use `#[serde(default)]`.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct GroupDirectives {
+    #[serde(default)]
+    pub force_sync_token: Option<String>,
+}
+
+impl GroupDirectives {
+    pub fn force_sync_token(&self) -> Option<&str> {
+        self.force_sync_token.as_deref()
+    }
+}
+
+/// Top-level directives map included in the manifest, keyed by group name.
+/// Uses `BTreeMap` for deterministic serialization order (matches server).
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct ManifestDirectives(pub BTreeMap<String, GroupDirectives>);
+
+impl ManifestDirectives {
+    pub fn get(&self, group: &str) -> Option<&GroupDirectives> {
+        self.0.get(group)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &GroupDirectives)> {
+        self.0.iter()
+    }
+}
+
 /// Manifest response from server
 #[derive(Debug, Deserialize)]
 pub struct ManifestResponse {
-    #[allow(unused)]
     pub version: u32,
     pub timestamp: i64,
     pub files: Vec<ManifestFileEntry>,
+    /// Per-group directives. Defaults to empty map for v1 server compatibility.
+    #[serde(default)]
+    pub directives: ManifestDirectives,
     pub signature: String,
 }
 
@@ -76,6 +107,16 @@ pub struct SyncState {
     pub chunk_progress: HashMap<String, ChunkProgress>,
     /// Last successful sync timestamp
     pub last_sync: Option<i64>,
+    /// Last seen force-sync token per group. If the server's token differs,
+    /// all files in that group are re-downloaded unconditionally.
+    #[serde(default)]
+    pub force_sync_tokens: HashMap<String, String>,
+}
+
+impl SyncState {
+    pub fn force_sync_token_for(&self, group: &str) -> Option<&str> {
+        self.force_sync_tokens.get(group).map(|s| s.as_str())
+    }
 }
 
 impl SyncState {
@@ -172,18 +213,28 @@ impl TdsClient {
             serde_json::from_slice(&body_bytes).context("Failed to parse manifest response")?;
 
         // Re-serialize from the parsed struct to match what the server signed.
-        // Use the same serde_json compact format that the server uses.
-        let manifest_data = serde_json::to_vec(&manifest.files)?;
+        // v2+: sign payload is files_json || directives_json (concatenated).
+        // v1:  sign payload is files_json only (backward compatibility).
+        let manifest_data = if manifest.version >= 2 {
+            let files_data = serde_json::to_vec(&manifest.files)?;
+            let directives_data = serde_json::to_vec(&manifest.directives)?;
+            let mut combined = Vec::with_capacity(files_data.len() + directives_data.len());
+            combined.extend_from_slice(&files_data);
+            combined.extend_from_slice(&directives_data);
+            combined
+        } else {
+            serde_json::to_vec(&manifest.files)?
+        };
 
         let signature = BASE64
             .decode(&manifest.signature)
             .context("Invalid manifest signature encoding")?;
 
         log::trace!(
-            "[manifest verify] timestamp={} data_len={} data_hex={} sig={}",
+            "[manifest verify] version={} timestamp={} data_len={} sig={}",
+            manifest.version,
             manifest.timestamp,
             manifest_data.len(),
-            hex::encode(&manifest_data),
             BASE64.encode(&signature),
         );
 
@@ -528,6 +579,19 @@ pub fn files_to_download(
                 return false;
             }
 
+            // Force-sync check: if the server has an active token for this group
+            // and it differs from the last seen token, re-download unconditionally.
+            let server_token = manifest
+                .directives
+                .get(&file.group)
+                .and_then(|d| d.force_sync_token());
+            if let Some(token) = server_token {
+                if state.force_sync_token_for(&file.group) != Some(token) {
+                    return true;
+                }
+            }
+
+            // Normal hash/mtime change detection.
             match state.file_metadata.get(&file.path) {
                 Some(existing) => {
                     existing.modified_at != file.modified_at

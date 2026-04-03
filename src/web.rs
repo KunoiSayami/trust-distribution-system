@@ -17,7 +17,7 @@ use crate::admin;
 use crate::configure::ClientEntry;
 use crate::types::{
     AppState, CachedEncryption, EnrollPayload, EnrollRequest, EnrollResponse, ErrorResponse,
-    HealthResponse, ManifestFileEntry, ManifestResponse,
+    HealthResponse, ManifestDirectives, ManifestFileEntry, ManifestResponse,
 };
 
 const CHUNK_CACHE_TTL: Duration = Duration::from_secs(600); // 10 minutes
@@ -37,6 +37,14 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/tokens/{client_id}",
             delete(admin::admin_revoke_tokens),
+        )
+        .route(
+            "/api/v1/admin/groups/{group}/force-sync",
+            post(admin::admin_set_force_sync),
+        )
+        .route(
+            "/api/v1/admin/groups/{group}/force-sync",
+            delete(admin::admin_clear_force_sync),
         )
         .with_state(state)
 }
@@ -92,7 +100,25 @@ async fn manifest_handler(
         }
     }
 
-    let manifest_data = serde_json::to_vec(&entries).unwrap_or_default();
+    // Collect active directives for groups present in this client's manifest only,
+    // to avoid leaking force-sync tokens for groups the client doesn't belong to.
+    let relevant_groups: std::collections::HashSet<&str> =
+        entries.iter().map(|e| e.group.as_str()).collect();
+    let mut directives_map = std::collections::BTreeMap::new();
+    for group in &relevant_groups {
+        if let Some(d) = state.group_directives().get(*group) {
+            directives_map.insert((*group).to_string(), d.clone());
+        }
+    }
+    let directives = ManifestDirectives(directives_map);
+
+    // Sign files_json || directives_json so the directives cannot be tampered with.
+    let files_data = serde_json::to_vec(&entries).unwrap_or_default();
+    let directives_data = serde_json::to_vec(&directives).unwrap_or_default();
+    let mut manifest_data = Vec::with_capacity(files_data.len() + directives_data.len());
+    manifest_data.extend_from_slice(&files_data);
+    manifest_data.extend_from_slice(&directives_data);
+
     let (signature, timestamp) = encryption::sign(&state.server_signing_key, &manifest_data)
         .map_err(|e| {
             (
@@ -102,17 +128,18 @@ async fn manifest_handler(
         })?;
 
     log::trace!(
-        "[manifest sign] timestamp={} data_len={} data_hex={} sig={}",
+        "[manifest sign] timestamp={} files_len={} directives_len={} sig={}",
         timestamp,
-        manifest_data.len(),
-        hex::encode(&manifest_data),
+        files_data.len(),
+        directives_data.len(),
         BASE64.encode(&signature),
     );
 
     Ok(Json(ManifestResponse {
-        version: 1,
+        version: 2,
         timestamp,
         files: entries,
+        directives,
         signature: BASE64.encode(&signature),
     }))
 }

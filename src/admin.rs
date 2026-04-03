@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::configure::AdminConfig;
 use crate::enrollment::{TokenEntry, generate_token};
-use crate::types::{AppState, ErrorResponse};
+use crate::types::{AppState, ErrorResponse, GroupDirectives};
 
 /// Request to create enrollment tokens
 #[derive(Debug, Deserialize)]
@@ -272,6 +272,76 @@ pub async fn admin_revoke_tokens(
             )),
         ))
     }
+}
+
+/// Response for force-sync set/clear operations
+#[derive(Debug, Serialize)]
+pub struct AdminForceSyncResponse {
+    pub group: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub force_sync_token: Option<String>,
+    pub active: bool,
+}
+
+/// POST /api/v1/admin/groups/{group}/force-sync
+/// Sets a new random force-sync token for the group. Authenticated clients
+/// subscribed to this group will re-download all group files on their next
+/// sync cycle, regardless of hash or mtime.
+pub async fn admin_set_force_sync(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(group): axum::extract::Path<String>,
+) -> Result<Json<AdminForceSyncResponse>, (StatusCode, Json<ErrorResponse>)> {
+    authenticate_admin(&state, &headers).await?;
+
+    {
+        let config = state.config.read().await;
+        if !config.groups.contains_key(&group) {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(
+                    format!("Unknown group '{group}'"),
+                    "GROUP_NOT_FOUND",
+                )),
+            ));
+        }
+    }
+
+    let token = hex::encode(rand::random::<[u8; 16]>());
+    state.group_directives().insert(
+        group.clone(),
+        GroupDirectives {
+            force_sync_token: Some(token.clone()),
+        },
+    );
+
+    log::info!("Admin set force-sync token for group '{group}': {token}");
+
+    Ok(Json(AdminForceSyncResponse {
+        group,
+        force_sync_token: Some(token),
+        active: true,
+    }))
+}
+
+/// DELETE /api/v1/admin/groups/{group}/force-sync
+/// Removes the force-sync token for the group, restoring normal sync behaviour.
+pub async fn admin_clear_force_sync(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(group): axum::extract::Path<String>,
+) -> Result<Json<AdminForceSyncResponse>, (StatusCode, Json<ErrorResponse>)> {
+    authenticate_admin(&state, &headers).await?;
+
+    state.group_directives().remove(&group);
+
+    log::info!("Admin cleared force-sync for group '{group}'");
+
+    Ok(Json(AdminForceSyncResponse {
+        group,
+        force_sync_token: None,
+        active: false,
+    }))
 }
 
 /// Generate current TOTP code from a secret (for CLI utility)
