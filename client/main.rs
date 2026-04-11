@@ -119,23 +119,23 @@ async fn sync_once(
     state: &mut SyncState,
     subscribed_groups: &[String],
 ) -> anyhow::Result<()> {
-    log::info!("Fetching manifest...");
+    //log::trace!("Fetching manifest...");
     let manifest = client.fetch_manifest().await?;
-    log::debug!("Manifest has {} files", manifest.files.len());
+    log::trace!("Manifest has {} files", manifest.files.len());
 
     let to_download = sync::files_to_download(&manifest, state, subscribed_groups);
 
     if to_download.is_empty() {
-        log::debug!("All files up to date");
+        log::trace!("All files up to date");
         return Ok(());
     }
 
-    log::info!("{} file(s) need updating", to_download.len());
+    log::debug!("{} file(s) need updating", to_download.len());
 
     let mut downloaded_files = Vec::new();
 
     for file in &to_download {
-        log::debug!("Downloading: {}", file.path);
+        log::trace!("Downloading: {}", file.path);
 
         let output_path = match sync::get_output_path(file, config) {
             Some(p) => p,
@@ -160,7 +160,7 @@ async fn sync_once(
 
         match result {
             Ok(content) => {
-                log::debug!("Wrote {} ({} bytes)", output_path.display(), content.len());
+                log::trace!("Wrote {} ({} bytes)", output_path.display(), content.len());
 
                 state.file_metadata.insert(
                     file.path.clone(),
@@ -252,12 +252,13 @@ async fn sync_once(
     state.save(&config.client.state_file)?;
 
     if !downloaded_files.is_empty() {
-        log::debug!("Executing post-download actions...");
+        //log::debug!("Executing post-download actions...");
         if let Err(e) = actions::execute_actions(&downloaded_files, config) {
             log::error!("Action execution failed: {e:?}");
         }
     }
 
+    log::info!("{} file(s) updated", to_download.len());
     Ok(())
 }
 
