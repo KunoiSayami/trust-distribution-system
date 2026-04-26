@@ -85,19 +85,28 @@ pub struct ActionsConfig {
 }
 
 impl ActionsConfig {
-    /// Resolve an `ActionEntry` to a concrete `ActionConfig`, following template references.
-    pub fn resolve<'a>(&'a self, entry: &'a ActionEntry) -> Option<&'a ActionConfig> {
+    /// Resolve an `ActionEntry` into an iterator of concrete `ActionConfig` references,
+    /// following template references and expanding lists.
+    pub fn resolve_all<'a>(
+        &'a self,
+        entry: &'a ActionEntry,
+    ) -> Box<dyn Iterator<Item = &'a ActionConfig> + 'a> {
         match entry {
-            ActionEntry::Inline(config) => Some(config),
-            ActionEntry::Template(name) => self.templates.get(name.as_str()),
+            ActionEntry::Inline(config) => Box::new(std::iter::once(config)),
+            ActionEntry::Template(name) => Box::new(self.templates.get(name.as_str()).into_iter()),
+            ActionEntry::Many(entries) => {
+                Box::new(entries.iter().flat_map(|e| self.resolve_all(e)))
+            }
         }
     }
 }
 
-/// An action entry: either an inline definition or a reference to a named template.
+/// An action entry: a single inline definition, a template reference, or an ordered list.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum ActionEntry {
+    /// Ordered list of entries, executed in sequence.
+    Many(Vec<ActionEntry>),
     /// Inline action definition.
     Inline(ActionConfig),
     /// Name of a template defined in `[actions.templates]`.
@@ -189,12 +198,46 @@ web-configs = "reload-nginx"
         let entry = config.actions.groups.get("web-servers").unwrap();
         assert!(matches!(entry, ActionEntry::Template(n) if n == "reload-nginx"));
 
-        let resolved = config.actions.resolve(entry).unwrap();
-        assert_eq!(resolved.command, "/usr/bin/systemctl");
+        let resolved: Vec<_> = config.actions.resolve_all(entry).collect();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].command, "/usr/bin/systemctl");
 
         // Both groups resolve to the same template
         let entry2 = config.actions.groups.get("web-configs").unwrap();
-        let resolved2 = config.actions.resolve(entry2).unwrap();
-        assert_eq!(resolved2.command, "/usr/bin/systemctl");
+        let resolved2: Vec<_> = config.actions.resolve_all(entry2).collect();
+        assert_eq!(resolved2[0].command, "/usr/bin/systemctl");
+    }
+
+    #[test]
+    fn test_parse_client_config_action_list() {
+        let config_str = r#"
+version = 1
+
+[client]
+id = "client-gamma"
+server_url = "https://server:8443"
+
+[client.keys]
+x25519_identity_path = "/etc/tds/client.x25519"
+signing_key_path = "/etc/tds/client_signing.key"
+server_verify_key = "base64key"
+
+[actions.templates.reload-nginx]
+command = "/usr/bin/systemctl"
+args = ["reload", "nginx"]
+on_change_only = true
+
+[actions.groups]
+web-servers = ["reload-nginx", {command = "/usr/bin/notify-send", args = ["done"]}]
+"#;
+
+        let config: ClientConfig = toml::from_str(config_str).unwrap();
+        let entry = config.actions.groups.get("web-servers").unwrap();
+        assert!(matches!(entry, ActionEntry::Many(_)));
+
+        let resolved: Vec<_> = config.actions.resolve_all(entry).collect();
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].command, "/usr/bin/systemctl");
+        assert_eq!(resolved[1].command, "/usr/bin/notify-send");
     }
 }

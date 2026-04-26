@@ -157,6 +157,10 @@ on_change_only = true
 # [actions.groups]
 # web-servers = "reload-nginx"
 # web-configs = "reload-nginx"
+#
+# Run multiple actions in sequence using a list (mix of templates and inline):
+# [actions.groups]
+# web-servers = ["reload-nginx", {command = "/usr/bin/notify-send", args = ["deployed"]}]
 ```
 
 ### 7. Run the Client
