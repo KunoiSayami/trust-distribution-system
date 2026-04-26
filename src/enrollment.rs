@@ -148,7 +148,7 @@ mod tests {
         let (token, entry) = generate_token(
             "test-client",
             &["production".to_string()],
-            "age1recipient...",
+            "X25519-PUBLIC-KEY-1:aabbccddeeff",
             "base64verifykey",
             1,
         );
@@ -159,7 +159,7 @@ mod tests {
         assert!(!entry.is_expired());
 
         let parsed = ParsedToken::parse(&token).unwrap();
-        assert_eq!(parsed.server_x25519_recipient, "age1recipient...");
+        assert_eq!(parsed.server_x25519_recipient, "X25519-PUBLIC-KEY-1:aabbccddeeff");
         assert_eq!(parsed.server_verify_key, "base64verifykey");
 
         // Verify hash matches
