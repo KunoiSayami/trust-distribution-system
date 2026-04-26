@@ -147,6 +147,16 @@ on_change_only = true
 command = "/usr/bin/systemctl"
 args = ["reload", "nginx"]
 on_change_only = true
+
+# Alternatively, define a named template and reference it from multiple groups:
+# [actions.templates.reload-nginx]
+# command = "/usr/bin/systemctl"
+# args = ["reload", "nginx"]
+# on_change_only = true
+#
+# [actions.groups]
+# web-servers = "reload-nginx"
+# web-configs = "reload-nginx"
 ```
 
 ### 7. Run the Client

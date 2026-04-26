@@ -77,9 +77,31 @@ pub struct BinarySubscription {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct ActionsConfig {
     #[serde(default)]
-    pub groups: HashMap<String, ActionConfig>,
+    pub templates: HashMap<String, ActionConfig>,
     #[serde(default)]
-    pub files: HashMap<String, ActionConfig>,
+    pub groups: HashMap<String, ActionEntry>,
+    #[serde(default)]
+    pub files: HashMap<String, ActionEntry>,
+}
+
+impl ActionsConfig {
+    /// Resolve an `ActionEntry` to a concrete `ActionConfig`, following template references.
+    pub fn resolve<'a>(&'a self, entry: &'a ActionEntry) -> Option<&'a ActionConfig> {
+        match entry {
+            ActionEntry::Inline(config) => Some(config),
+            ActionEntry::Template(name) => self.templates.get(name.as_str()),
+        }
+    }
+}
+
+/// An action entry: either an inline definition or a reference to a named template.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ActionEntry {
+    /// Inline action definition.
+    Inline(ActionConfig),
+    /// Name of a template defined in `[actions.templates]`.
+    Template(String),
 }
 
 /// Action to run after file download
@@ -131,5 +153,48 @@ on_change_only = true
         assert_eq!(config.client.poll_interval, 300);
         assert!(config.subscriptions.contains_key("production"));
         assert!(config.actions.groups.contains_key("production"));
+        assert!(matches!(
+            config.actions.groups.get("production").unwrap(),
+            ActionEntry::Inline(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_client_config_template_reference() {
+        let config_str = r#"
+version = 1
+
+[client]
+id = "client-beta"
+server_url = "https://server:8443"
+
+[client.keys]
+x25519_identity_path = "/etc/tds/client.x25519"
+signing_key_path = "/etc/tds/client_signing.key"
+server_verify_key = "base64key"
+
+[actions.templates.reload-nginx]
+command = "/usr/bin/systemctl"
+args = ["reload", "nginx"]
+on_change_only = true
+
+[actions.groups]
+web-servers = "reload-nginx"
+web-configs = "reload-nginx"
+"#;
+
+        let config: ClientConfig = toml::from_str(config_str).unwrap();
+        assert!(config.actions.templates.contains_key("reload-nginx"));
+
+        let entry = config.actions.groups.get("web-servers").unwrap();
+        assert!(matches!(entry, ActionEntry::Template(n) if n == "reload-nginx"));
+
+        let resolved = config.actions.resolve(entry).unwrap();
+        assert_eq!(resolved.command, "/usr/bin/systemctl");
+
+        // Both groups resolve to the same template
+        let entry2 = config.actions.groups.get("web-configs").unwrap();
+        let resolved2 = config.actions.resolve(entry2).unwrap();
+        assert_eq!(resolved2.command, "/usr/bin/systemctl");
     }
 }

@@ -15,22 +15,26 @@ pub fn execute_actions(
 
     // Execute file-specific actions first
     for file in changed_files {
-        if let Some(action) = config.actions.files.get(&file.path) {
-            if action.on_change_only {
-                log::trace!("Running file action for {}", file.path);
-                run_action(action)
-                    .with_context(|| format!("Failed to run action for file {}", file.path))?;
+        if let Some(entry) = config.actions.files.get(&file.path) {
+            if let Some(action) = config.actions.resolve(entry) {
+                if action.on_change_only {
+                    log::trace!("Running file action for {}", file.path);
+                    run_action(action)
+                        .with_context(|| format!("Failed to run action for file {}", file.path))?;
+                }
             }
         }
     }
 
     // Execute group actions
     for group in changed_groups {
-        if let Some(action) = config.actions.groups.get(group) {
-            if action.on_change_only {
-                log::trace!("Running group action for {group}");
-                run_action(action)
-                    .with_context(|| format!("Failed to run action for group {group}"))?;
+        if let Some(entry) = config.actions.groups.get(group) {
+            if let Some(action) = config.actions.resolve(entry) {
+                if action.on_change_only {
+                    log::trace!("Running group action for {group}");
+                    run_action(action)
+                        .with_context(|| format!("Failed to run action for group {group}"))?;
+                }
             }
         }
     }
@@ -42,15 +46,20 @@ pub fn execute_actions(
 #[allow(unused)]
 pub fn execute_all_actions(config: &ClientConfig) -> anyhow::Result<()> {
     // Execute all group actions
-    for (group, action) in &config.actions.groups {
-        log::trace!("Running group action for {group}");
-        run_action(action).with_context(|| format!("Failed to run action for group {group}"))?;
+    for (group, entry) in &config.actions.groups {
+        if let Some(action) = config.actions.resolve(entry) {
+            log::trace!("Running group action for {group}");
+            run_action(action)
+                .with_context(|| format!("Failed to run action for group {group}"))?;
+        }
     }
 
     // Execute all file actions
-    for (file, action) in &config.actions.files {
-        log::info!("Running file action for {file}");
-        run_action(action).with_context(|| format!("Failed to run action for file {file}"))?;
+    for (file, entry) in &config.actions.files {
+        if let Some(action) = config.actions.resolve(entry) {
+            log::info!("Running file action for {file}");
+            run_action(action).with_context(|| format!("Failed to run action for file {file}"))?;
+        }
     }
 
     Ok(())
