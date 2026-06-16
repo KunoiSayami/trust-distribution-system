@@ -9,7 +9,7 @@ A secure certificate and file distribution system using **AES-256-GCM encryption
 - **Authenticated requests**: Ed25519 signatures for client authentication
 - **Change detection**: Polling with SHA-256 hash comparison
 - **Group-based access**: Clients subscribe to groups, groups contain paths (files or directories, auto-detected)
-- **Post-download actions**: Run commands after files change (e.g., `systemctl reload nginx`)
+- **Post-download actions**: Run commands after files change (e.g., `systemctl reload nginx`); identical commands triggered by multiple files are deduplicated per cycle
 - **Simple enrollment**: One-time tokens for easy client setup
 - **Reverse proxy friendly**: Runs behind nginx without TLS
 
@@ -156,11 +156,18 @@ on_change_only = true
 #
 # [actions.groups]
 # web-servers = "reload-nginx"
-# web-configs = "reload-nginx"
+# web-configs = "reload-nginx"   # same command → runs only once per cycle
 #
 # Run multiple actions in sequence using a list (mix of templates and inline):
 # [actions.groups]
 # web-servers = ["reload-nginx", {command = "/usr/bin/notify-send", args = ["deployed"]}]
+#
+# Use immediate = true to bypass per-cycle deduplication (runs once per triggering file/group):
+# [actions.templates.audit-log]
+# command = "/usr/bin/logger"
+# args = ["-t", "tds", "file changed"]
+# on_change_only = true
+# immediate = true
 ```
 
 ### 7. Run the Client

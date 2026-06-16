@@ -114,13 +114,17 @@ pub enum ActionEntry {
 }
 
 /// Action to run after file download
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
 pub struct ActionConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default = "default_true")]
     pub on_change_only: bool,
+    /// When true, run once per triggering file/group without deduplication.
+    /// When false (default), identical commands are deduplicated across the cycle.
+    #[serde(default)]
+    pub immediate: bool,
 }
 
 #[cfg(test)]

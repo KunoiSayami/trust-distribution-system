@@ -159,7 +159,10 @@ mod tests {
         assert!(!entry.is_expired());
 
         let parsed = ParsedToken::parse(&token).unwrap();
-        assert_eq!(parsed.server_x25519_recipient, "X25519-PUBLIC-KEY-1:aabbccddeeff");
+        assert_eq!(
+            parsed.server_x25519_recipient,
+            "X25519-PUBLIC-KEY-1:aabbccddeeff"
+        );
         assert_eq!(parsed.server_verify_key, "base64verifykey");
 
         // Verify hash matches
