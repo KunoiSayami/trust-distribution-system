@@ -113,6 +113,36 @@ async fn run_client(config_path: PathBuf, once: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+const DOWNLOAD_MAX_ATTEMPTS: u32 = 3;
+
+async fn download_with_retry(
+    client: &TdsClient,
+    path: &str,
+    state: &mut SyncState,
+    state_path: &std::path::Path,
+    output_path: &std::path::Path,
+) -> anyhow::Result<Vec<u8>> {
+    let mut last_err = anyhow::anyhow!("no attempts made");
+    for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
+        match client
+            .download_file_resumable(path, state, state_path, output_path)
+            .await
+        {
+            Ok(content) => return Ok(content),
+            Err(e) => {
+                last_err = e;
+                if attempt < DOWNLOAD_MAX_ATTEMPTS {
+                    log::warn!(
+                        "Download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} failed for {path}: {last_err}; retrying…"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt - 1))).await;
+                }
+            }
+        }
+    }
+    Err(last_err)
+}
+
 async fn sync_once(
     client: &TdsClient,
     config: &ClientConfig,
@@ -162,9 +192,14 @@ async fn sync_once(
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let result = client
-            .download_file_resumable(&file.path, state, &config.client.state_file, &output_path)
-            .await;
+        let result = download_with_retry(
+            client,
+            &file.path,
+            state,
+            &config.client.state_file,
+            &output_path,
+        )
+        .await;
 
         match result {
             Ok(content) => {
@@ -202,14 +237,14 @@ async fn sync_once(
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let result = client
-            .download_file_resumable(
-                &binary_entry.path,
-                state,
-                &config.client.state_file,
-                output_path,
-            )
-            .await;
+        let result = download_with_retry(
+            client,
+            &binary_entry.path,
+            state,
+            &config.client.state_file,
+            output_path,
+        )
+        .await;
 
         match result {
             Ok(_) => {

@@ -89,6 +89,7 @@ pub struct FileMetadata {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChunkManifestResponse {
     pub chunk_count: u64,
+    #[allow(dead_code)]
     pub chunk_size: usize,
     pub ephemeral_public_key: String,
     pub file_nonce: String,
