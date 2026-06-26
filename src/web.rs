@@ -250,7 +250,11 @@ async fn get_or_populate_cache(
     let content_hash = format!("sha256:{}", hex::encode(Sha256::digest(&content)));
 
     // Cache key includes content_hash so stale entries for old file versions are never used.
-    let cache_key = (client_id.to_string(), path.to_string(), content_hash.clone());
+    let cache_key = (
+        client_id.to_string(),
+        path.to_string(),
+        content_hash.clone(),
+    );
 
     if let Some(entry) = state.chunk_cache.get(&cache_key) {
         if entry.expires_at > Instant::now() {
@@ -811,8 +815,7 @@ mod tests {
                 client_id.clone(),
                 ClientEntry {
                     x25519_public_key: client_x25519_identity.to_recipient().to_string(),
-                    auth_public_key: BASE64
-                        .encode(client_signing_key.verifying_key().to_bytes()),
+                    auth_public_key: BASE64.encode(client_signing_key.verifying_key().to_bytes()),
                     groups: vec!["test-group".to_string()],
                     enrolled_at: None,
                     binaries: vec![],
@@ -878,6 +881,22 @@ mod tests {
         fn file_path(&self, name: &str) -> std::path::PathBuf {
             self.dir.path().join(name)
         }
+
+        /// Returns the relative path the server assigns to a file:
+        /// "parent_dir_name/filename", matching `configure.rs` single-file logic.
+        fn relative_path(&self, name: &str) -> String {
+            let full = self.file_path(name);
+            let parent = full
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if parent.is_empty() {
+                name.to_string()
+            } else {
+                format!("{parent}/{name}")
+            }
+        }
     }
 
     fn make_request(method: &str, uri: &str, headers: &[(&'static str, String)]) -> Request<Body> {
@@ -909,11 +928,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "chunk manifest failed");
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&body_bytes(resp).await).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
 
         let chunk_count = manifest["chunk_count"].as_u64().unwrap();
-        let epk_hex = manifest["ephemeral_public_key"].as_str().unwrap().to_string();
+        let epk_hex = manifest["ephemeral_public_key"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let nonce_hex = manifest["file_nonce"].as_str().unwrap().to_string();
         let content_hash = manifest["content_hash"].as_str().unwrap().to_string();
 
@@ -965,8 +986,9 @@ mod tests {
     async fn test_chunk_download_hash_matches_original() {
         let content = b"hello from the trust distribution system";
         let env = TestEnv::new("test.txt", content);
+        let path = env.relative_path("test.txt");
 
-        let downloaded = download_via_chunks(&env, "test.txt").await;
+        let downloaded = download_via_chunks(&env, &path).await;
         assert_eq!(downloaded, content);
     }
 
@@ -977,8 +999,9 @@ mod tests {
             .map(|i| (i % 251) as u8)
             .collect();
         let env = TestEnv::new("large.bin", &content);
+        let path = env.relative_path("large.bin");
 
-        let downloaded = download_via_chunks(&env, "large.bin").await;
+        let downloaded = download_via_chunks(&env, &path).await;
         assert_eq!(downloaded, content);
     }
 
@@ -986,32 +1009,28 @@ mod tests {
     async fn test_manifest_hash_matches_chunk_download() {
         let content = b"manifest and chunk must agree on hash";
         let env = TestEnv::new("data.txt", content);
+        let path = env.relative_path("data.txt");
         let router = env.router();
 
         // Fetch manifest
         let resp = router
             .clone()
-            .oneshot(make_request(
-                "GET",
-                "/api/v1/manifest",
-                &env.auth_headers(),
-            ))
+            .oneshot(make_request("GET", "/api/v1/manifest", &env.auth_headers()))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&body_bytes(resp).await).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
 
         let files = manifest["files"].as_array().unwrap();
         let entry = files
             .iter()
-            .find(|f| f["path"].as_str() == Some("data.txt"))
+            .find(|f| f["path"].as_str() == Some(path.as_str()))
             .expect("data.txt not in manifest");
         let manifest_hash = entry["content_hash"].as_str().unwrap().to_string();
 
         // Download via chunks — download_via_chunks asserts chunk manifest hash matches plaintext.
         // Also assert it equals the file-level manifest hash.
-        let downloaded = download_via_chunks(&env, "data.txt").await;
+        let downloaded = download_via_chunks(&env, &path).await;
         let actual_hash = format!("sha256:{}", hex::encode(Sha256::digest(&downloaded)));
         assert_eq!(
             actual_hash, manifest_hash,
@@ -1022,10 +1041,11 @@ mod tests {
     #[tokio::test]
     async fn test_updated_file_serves_new_content() {
         let env = TestEnv::new("update.txt", b"version one");
+        let path = env.relative_path("update.txt");
         let router = env.router();
 
         // Download v1
-        let v1 = download_via_chunks(&env, "update.txt").await;
+        let v1 = download_via_chunks(&env, &path).await;
         assert_eq!(v1, b"version one");
 
         // Update file on disk
@@ -1034,29 +1054,27 @@ mod tests {
         // Download again — must get v2, not the cached v1
         let resp = router
             .clone()
-            .oneshot(make_request(
-                "GET",
-                "/api/v1/manifest",
-                &env.auth_headers(),
-            ))
+            .oneshot(make_request("GET", "/api/v1/manifest", &env.auth_headers()))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&body_bytes(resp).await).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
         let files = manifest["files"].as_array().unwrap();
         let entry = files
             .iter()
-            .find(|f| f["path"].as_str() == Some("update.txt"))
+            .find(|f| f["path"].as_str() == Some(path.as_str()))
             .expect("update.txt not in manifest");
         let new_hash = entry["content_hash"].as_str().unwrap();
-        let expected_hash = format!(
-            "sha256:{}",
-            hex::encode(Sha256::digest(b"version two"))
+        let expected_hash = format!("sha256:{}", hex::encode(Sha256::digest(b"version two")));
+        assert_eq!(
+            new_hash, expected_hash,
+            "manifest did not reflect updated file"
         );
-        assert_eq!(new_hash, expected_hash, "manifest did not reflect updated file");
 
-        let v2 = download_via_chunks(&env, "update.txt").await;
-        assert_eq!(v2, b"version two", "chunk download still serving stale content");
+        let v2 = download_via_chunks(&env, &path).await;
+        assert_eq!(
+            v2, b"version two",
+            "chunk download still serving stale content"
+        );
     }
 }

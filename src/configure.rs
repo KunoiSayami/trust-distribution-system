@@ -167,11 +167,23 @@ impl ServerConfig {
                             }
                         }
                     } else if path.is_file() {
-                        // Single file
-                        let relative_path = path
+                        // Single file: use "parent_dir_name/filename" to mirror how
+                        // scan_directory names files, giving distinct identities to files
+                        // with the same name in different directories.
+                        let parent_name = path
+                            .parent()
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let file_name = path
                             .file_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_default();
+                        let relative_path = if parent_name.is_empty() {
+                            file_name
+                        } else {
+                            format!("{parent_name}/{file_name}")
+                        };
                         if !relative_path.is_empty() {
                             files.push(FileInfo {
                                 source_path: path,
