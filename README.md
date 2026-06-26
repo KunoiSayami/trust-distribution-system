@@ -57,6 +57,8 @@ token_expiry_hours = 1   # Default token lifetime in hours
 allow_localhost = false  # Allow token-free enrollment from localhost (dev only)
 
 # Define file groups
+# Group names must be alphanumeric with hyphens/underscores only ([a-zA-Z0-9_-]).
+# All paths in a group must share a common parent that is not the filesystem root.
 [groups.production]
 paths = [
   "/etc/certs/ca.pem",
@@ -244,6 +246,8 @@ cargo run --bin client -- -c /etc/tds-client/client.toml run
 | DELETE | `/api/v1/admin/tokens/{client_id}` | Admin | Revoke tokens for client |
 | POST | `/api/v1/admin/groups/{group}/force-sync` | Admin | Activate force re-download for a group |
 | DELETE | `/api/v1/admin/groups/{group}/force-sync` | Admin | Clear force-sync for a group |
+| DELETE | `/api/v1/admin/cache` | Admin | Clear entire server chunk cache |
+| DELETE | `/api/v1/admin/cache/{client_id}` | Admin | Clear chunk cache for one client |
 
 ### Client Authentication Headers
 
@@ -384,6 +388,10 @@ server token -p <password> [-s <server>] [-c <config>] [-t <totp>] revoke --clie
 server group -p <password> [-s <server>] [-c <config>] [-t <totp>] force-sync --group <name>
 server group -p <password> [-s <server>] [-c <config>] [-t <totp>] clear-force-sync --group <name>
 
+# Cache management (via HTTP to running server, requires admin credentials)
+server cache -p <password> [-s <server>] [-c <config>] [-t <totp>] clear
+server cache -p <password> [-s <server>] [-c <config>] [-t <totp>] clear-client --client-id <id>
+
 # Utility commands for admin setup
 server hash-password <password>              # Generate Argon2id hash for config
 server totp-setup --account <name>           # Generate new TOTP secret
@@ -419,6 +427,27 @@ Version 0.3 replaces Age encryption with AES-256-GCM. Existing deployments must:
 4. Replace `server.age` and `client.age` key files with the new `.x25519` files
 5. Re-enroll clients to exchange new public keys (`tds-enroll-v2` tokens are required; old `tds-enroll-v1` tokens are rejected)
 
+## File Path Identity
+
+Files are exposed to clients as `{group_name}:{relative_path}`, where `relative_path` is derived from the common parent of all configured paths in that group. No absolute filesystem paths are revealed.
+
+For example:
+
+```toml
+[groups.certs]
+paths = [
+  "/srv/deploy/site1/certs/",        # directory
+  "/srv/deploy/site2/fullchain.cer", # single file
+]
+```
+
+Common parent = `/srv/deploy/`. Clients see:
+
+- `certs:site1/certs/fullchain.cer`
+- `certs:site2/fullchain.cer`
+
+Group names are restricted to `[a-zA-Z0-9_-]`. The server rejects configs where the common parent of a group's paths is the filesystem root (`/`), which would expose the full directory tree.
+
 ## Security
 
 - **Encryption**: X25519 ECDH key exchange + HKDF-SHA256 key derivation + AES-256-GCM per chunk
@@ -429,6 +458,7 @@ Version 0.3 replaces Age encryption with AES-256-GCM. Existing deployments must:
 - **Replay protection**: Nonce cache prevents request replay within 5-minute window
 - **Token security**: Enrollment tokens are one-time use, expire after 1 hour by default
 - **Localhost bypass**: Optional development mode to skip token validation for local connections
+- **Path isolation**: File paths exposed to clients use `group:relative` format — no absolute filesystem paths are leaked; group names are validated to prevent path injection
 
 ## Building
 
