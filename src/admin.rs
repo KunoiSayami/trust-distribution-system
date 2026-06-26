@@ -344,6 +344,46 @@ pub async fn admin_clear_force_sync(
     }))
 }
 
+/// Response for cache-clear operations
+#[derive(Debug, Serialize)]
+pub struct AdminCacheClearResponse {
+    pub entries_removed: usize,
+}
+
+/// DELETE /api/v1/admin/cache - Clear the entire server chunk cache
+pub async fn admin_clear_cache(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<AdminCacheClearResponse>, (StatusCode, Json<ErrorResponse>)> {
+    authenticate_admin(&state, &headers).await?;
+
+    let entries_removed = state.chunk_cache.len();
+    state.chunk_cache.clear();
+
+    log::info!("Admin cleared chunk cache ({entries_removed} entries removed)");
+
+    Ok(Json(AdminCacheClearResponse { entries_removed }))
+}
+
+/// DELETE /api/v1/admin/cache/{client_id} - Clear chunk cache for a specific client
+pub async fn admin_clear_client_cache(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(client_id): axum::extract::Path<String>,
+) -> Result<Json<AdminCacheClearResponse>, (StatusCode, Json<ErrorResponse>)> {
+    authenticate_admin(&state, &headers).await?;
+
+    let before = state.chunk_cache.len();
+    state.chunk_cache.retain(|(cid, _, _), _| cid != &client_id);
+    let entries_removed = before - state.chunk_cache.len();
+
+    log::info!(
+        "Admin cleared chunk cache for client '{client_id}' ({entries_removed} entries removed)"
+    );
+
+    Ok(Json(AdminCacheClearResponse { entries_removed }))
+}
+
 /// Generate current TOTP code from a secret (for CLI utility)
 pub fn generate_totp_code(secret: &str) -> anyhow::Result<String> {
     use totp_rs::{Algorithm, TOTP};

@@ -77,6 +77,27 @@ enum Commands {
     },
     /// Show clients and groups from config
     Show,
+    /// Cache management (via HTTP to running server)
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+
+        /// Server config file (to auto-read TOTP secret and bind address)
+        #[arg(long, short = 'c')]
+        config: Option<PathBuf>,
+
+        /// Server URL (overrides config bind address)
+        #[arg(long, short = 's', default_value = "http://127.0.0.1:8080")]
+        server: String,
+
+        /// Admin password
+        #[arg(long, short = 'p')]
+        password: String,
+
+        /// TOTP code (auto-generated if --config provided with admin section)
+        #[arg(long, short = 't')]
+        totp: Option<String>,
+    },
     /// Group management (via HTTP to running server)
     Group {
         #[command(subcommand)]
@@ -97,6 +118,18 @@ enum Commands {
         /// TOTP code (auto-generated if --config provided with admin section)
         #[arg(long, short = 't')]
         totp: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CacheAction {
+    /// Clear the entire server chunk cache
+    Clear,
+    /// Clear chunk cache for a specific client
+    ClearClient {
+        /// Client ID whose cache entries to remove
+        #[arg(long)]
+        client_id: String,
     },
 }
 
@@ -420,6 +453,61 @@ fn totp_setup_command(account: &str, issuer: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn cache_command(
+    action: CacheAction,
+    config_path: Option<PathBuf>,
+    server_arg: String,
+    password: String,
+    totp_arg: Option<String>,
+) -> anyhow::Result<()> {
+    let (server_url, totp_code) = resolve_admin_credentials(&config_path, &server_arg, &totp_arg)?;
+
+    let client = reqwest::Client::new();
+
+    match action {
+        CacheAction::Clear => {
+            let response = client
+                .delete(format!("{server_url}/api/v1/admin/cache"))
+                .header("Authorization", format!("Admin {password}"))
+                .header("X-TOTP-Code", &totp_code)
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let result: serde_json::Value = response.json().await?;
+                println!(
+                    "Cache cleared ({} entries removed).",
+                    result["entries_removed"].as_u64().unwrap_or(0)
+                );
+            } else {
+                let error: serde_json::Value = response.json().await?;
+                anyhow::bail!("Failed to clear cache: {}", error["error"]);
+            }
+        }
+        CacheAction::ClearClient { client_id } => {
+            let response = client
+                .delete(format!("{server_url}/api/v1/admin/cache/{client_id}"))
+                .header("Authorization", format!("Admin {password}"))
+                .header("X-TOTP-Code", &totp_code)
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let result: serde_json::Value = response.json().await?;
+                println!(
+                    "Cache cleared for client '{client_id}' ({} entries removed).",
+                    result["entries_removed"].as_u64().unwrap_or(0)
+                );
+            } else {
+                let error: serde_json::Value = response.json().await?;
+                anyhow::bail!("Failed to clear cache: {}", error["error"]);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn group_command(
     action: GroupAction,
     config_path: Option<PathBuf>,
@@ -535,6 +623,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::HashPassword { password }) => hash_password_command(&password),
         Some(Commands::TotpSetup { account, issuer }) => totp_setup_command(&account, &issuer),
         Some(Commands::Show) => show_command(cli.config),
+        Some(Commands::Cache {
+            action,
+            config,
+            server,
+            password,
+            totp,
+        }) => cache_command(action, config, server, password, totp).await,
         Some(Commands::Group {
             action,
             config,

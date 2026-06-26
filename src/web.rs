@@ -46,6 +46,11 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/admin/groups/{group}/force-sync",
             delete(admin::admin_clear_force_sync),
         )
+        .route("/api/v1/admin/cache", delete(admin::admin_clear_cache))
+        .route(
+            "/api/v1/admin/cache/{client_id}",
+            delete(admin::admin_clear_client_cache),
+        )
         .with_state(state)
 }
 
