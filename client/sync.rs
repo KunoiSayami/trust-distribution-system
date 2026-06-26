@@ -404,13 +404,16 @@ impl TdsClient {
 
         let tmp_path = output_path.with_extension("tds-tmp");
 
-        // Pre-allocate the temp file
-        {
+        // Pre-allocate the temp file only when starting fresh.
+        // On resume the tmp file already contains the previously written chunks — overwriting
+        // it would zero out slots we intend to skip, producing a hash mismatch on completion.
+        if !resume || !tmp_path.exists() {
             let file = std::fs::OpenOptions::new()
                 .create(true)
                 .write(true)
+                .truncate(true)
                 .open(&tmp_path)?;
-            let total_size = manifest.chunk_count as u64 * manifest.chunk_size as u64;
+            let total_size = manifest.chunk_count as u64 * encryption::CHUNK_SIZE as u64;
             file.set_len(total_size)?;
         }
 
@@ -471,10 +474,9 @@ impl TdsClient {
                 last_chunk_plaintext_len = Some(plaintext.len());
             }
 
-            // Write chunk to correct offset in temp file
             use std::io::{Seek, SeekFrom, Write};
             let mut file = std::fs::OpenOptions::new().write(true).open(&tmp_path)?;
-            file.seek(SeekFrom::Start(chunk_index * manifest.chunk_size as u64))?;
+            file.seek(SeekFrom::Start(chunk_index * encryption::CHUNK_SIZE as u64))?;
             file.write_all(&plaintext)?;
 
             // Mark verified and persist state immediately
@@ -496,7 +498,7 @@ impl TdsClient {
         // last_chunk_plaintext_len is None only when all chunks were already verified (resume),
         // in which case the tmp file already has the correct size from the previous run.
         let exact_size = if let Some(last_len) = last_chunk_plaintext_len {
-            (manifest.chunk_count - 1) as u64 * manifest.chunk_size as u64 + last_len as u64
+            (manifest.chunk_count - 1) as u64 * encryption::CHUNK_SIZE as u64 + last_len as u64
         } else {
             // All chunks were pre-verified (pure resume with no new downloads).
             // The tmp file was written correctly in a prior run; read it as-is.

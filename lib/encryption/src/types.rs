@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const CHUNK_SIZE: usize = 1_048_576; // 1 MB
+pub const CHUNK_SIZE: usize = 1_048_576; // 1 MB plaintext per chunk (ciphertext = CHUNK_SIZE + 16)
 pub const CURRENT_VERSION: u64 = 3;
 
 /// Chunked AES-256-GCM encrypted content

@@ -130,7 +130,15 @@ async fn sync_once(
         return Ok(());
     }
 
-    log::debug!("{} file(s) need updating", to_download.len());
+    log::debug!(
+        "{} file(s) need updating: {}",
+        to_download.len(),
+        to_download
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     let mut downloaded_files = Vec::new();
 

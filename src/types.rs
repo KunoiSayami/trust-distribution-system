@@ -62,7 +62,7 @@ pub struct AppState {
     pub server_signing_key: Arc<encryption::SigningKey>,
     pub server_x25519_identity: Arc<encryption::X25519Identity>,
     pub nonce_cache: Arc<NonceCache>,
-    pub chunk_cache: Arc<DashMap<(String, String), CachedEncryption>>,
+    pub chunk_cache: Arc<DashMap<(String, String, String), CachedEncryption>>,
     pub token_store: Arc<RwLock<TokenStore>>,
     pub config_path: PathBuf,
     /// In-memory force-sync tokens: group name → active directives.

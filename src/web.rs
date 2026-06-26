@@ -212,17 +212,9 @@ async fn get_or_populate_cache(
     state: &AppState,
     client_id: &str,
     path: &str,
-) -> Result<ChunkedEncrypted, (StatusCode, Json<ErrorResponse>)> {
-    let cache_key = (client_id.to_string(), path.to_string());
-
-    // Check cache first
-    if let Some(entry) = state.chunk_cache.get(&cache_key) {
-        if entry.expires_at > Instant::now() {
-            return Ok(entry.payload.clone());
-        }
-    }
-
-    // Cache miss or expired — encrypt the file
+) -> Result<(ChunkedEncrypted, String), (StatusCode, Json<ErrorResponse>)> {
+    // Read file and compute hash first — the hash is part of the cache key so that
+    // a changed file always produces a fresh encryption rather than serving stale chunks.
     let config = state.config.read().await;
     let client = config.clients.get(client_id).ok_or_else(|| {
         (
@@ -257,6 +249,15 @@ async fn get_or_populate_cache(
 
     let content_hash = format!("sha256:{}", hex::encode(Sha256::digest(&content)));
 
+    // Cache key includes content_hash so stale entries for old file versions are never used.
+    let cache_key = (client_id.to_string(), path.to_string(), content_hash.clone());
+
+    if let Some(entry) = state.chunk_cache.get(&cache_key) {
+        if entry.expires_at > Instant::now() {
+            return Ok((entry.payload.clone(), entry.content_hash.clone()));
+        }
+    }
+
     let encrypted = encryption::encrypt(&recipient, content).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -273,11 +274,11 @@ async fn get_or_populate_cache(
         CachedEncryption {
             payload: chunked.clone(),
             expires_at: Instant::now() + CHUNK_CACHE_TTL,
-            content_hash,
+            content_hash: content_hash.clone(),
         },
     );
 
-    Ok(chunked)
+    Ok((chunked, content_hash))
 }
 
 /// File download endpoint - returns the full encrypted TransmissionFile (all chunks)
@@ -288,13 +289,7 @@ async fn file_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let client_id = authenticate_request(&state, &headers).await?;
 
-    let chunked = get_or_populate_cache(&state, &client_id, &path).await?;
-
-    let content_hash = state
-        .chunk_cache
-        .get(&(client_id.clone(), path.clone()))
-        .map(|e| e.content_hash.clone())
-        .unwrap_or_default();
+    let (chunked, content_hash) = get_or_populate_cache(&state, &client_id, &path).await?;
 
     let body_content = encryption::Content::ChunkedEncrypted(chunked);
     let body_cbor = body_content.to_cbor();
@@ -338,13 +333,7 @@ async fn chunk_manifest_handler(
 ) -> Result<Json<ChunkManifestResponse>, (StatusCode, Json<ErrorResponse>)> {
     let client_id = authenticate_request(&state, &headers).await?;
 
-    let chunked = get_or_populate_cache(&state, &client_id, &path).await?;
-
-    let content_hash = state
-        .chunk_cache
-        .get(&(client_id.clone(), path.clone()))
-        .map(|e| e.content_hash.clone())
-        .unwrap_or_default();
+    let (chunked, content_hash) = get_or_populate_cache(&state, &client_id, &path).await?;
 
     let epk_hex = hex::encode(&chunked.ephemeral_public_key);
     let nonce_hex = hex::encode(&chunked.file_nonce);
@@ -382,7 +371,7 @@ async fn chunk_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let client_id = authenticate_request(&state, &headers).await?;
 
-    let chunked = get_or_populate_cache(&state, &client_id, &path).await?;
+    let (chunked, _content_hash) = get_or_populate_cache(&state, &client_id, &path).await?;
 
     let chunk_data = chunked.chunks.get(index as usize).ok_or_else(|| {
         (
@@ -772,4 +761,302 @@ pub async fn run_server(state: AppState, bind: &str) -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::configure::{
+        ClientEntry, EnrollmentConfig, GroupConfig, ServerKeyConfig, ServerSettings,
+    };
+    use crate::enrollment::TokenStore;
+    use axum::body::Body;
+    use axum::http::Request;
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+    use tower::ServiceExt;
+
+    struct TestEnv {
+        dir: tempfile::TempDir,
+        state: AppState,
+        client_signing_key: encryption::SigningKey,
+        client_x25519_identity: encryption::X25519Identity,
+        client_id: String,
+    }
+
+    impl TestEnv {
+        fn new(file_name: &str, content: &[u8]) -> Self {
+            let dir = tempfile::TempDir::new().unwrap();
+            let file_path = dir.path().join(file_name);
+            std::fs::write(&file_path, content).unwrap();
+
+            let server_signing_key = encryption::SigningKey::generate();
+            let server_x25519_identity = encryption::X25519Identity::generate();
+
+            let client_signing_key = encryption::SigningKey::generate();
+            let client_x25519_identity = encryption::X25519Identity::generate();
+            let client_id = "test-client".to_string();
+
+            let mut groups = HashMap::new();
+            groups.insert(
+                "test-group".to_string(),
+                GroupConfig {
+                    description: None,
+                    paths: vec![file_path.to_string_lossy().to_string()],
+                },
+            );
+
+            let mut clients = HashMap::new();
+            clients.insert(
+                client_id.clone(),
+                ClientEntry {
+                    x25519_public_key: client_x25519_identity.to_recipient().to_string(),
+                    auth_public_key: BASE64
+                        .encode(client_signing_key.verifying_key().to_bytes()),
+                    groups: vec!["test-group".to_string()],
+                    enrolled_at: None,
+                    binaries: vec![],
+                },
+            );
+
+            let config = ServerConfig {
+                version: 1,
+                server: ServerSettings {
+                    bind: "127.0.0.1:0".to_string(),
+                    tls: None,
+                    proxy: None,
+                    keys: ServerKeyConfig {
+                        signing_key_path: dir.path().join("unused.key"),
+                        x25519_identity_path: dir.path().join("unused.x25519"),
+                    },
+                    enrollment: EnrollmentConfig {
+                        enabled: false,
+                        token_expiry_hours: 1,
+                        allow_localhost: false,
+                    },
+                    admin: None,
+                },
+                clients,
+                groups,
+                binaries: HashMap::new(),
+            };
+
+            let state = AppState::new(
+                config,
+                server_signing_key,
+                server_x25519_identity,
+                TokenStore::new(),
+                dir.path().join("unused.toml"),
+            );
+
+            Self {
+                dir,
+                state,
+                client_signing_key,
+                client_x25519_identity,
+                client_id,
+            }
+        }
+
+        fn auth_headers(&self) -> Vec<(&'static str, String)> {
+            let timestamp = chrono::Utc::now().timestamp_millis();
+            let nonce = BASE64.encode(rand::random::<[u8; 16]>());
+            let payload = format!("{}\n{}\n{}", self.client_id, timestamp, nonce);
+            let (sig, _) = encryption::sign(&self.client_signing_key, payload.as_bytes()).unwrap();
+            vec![
+                ("X-Client-Id", self.client_id.clone()),
+                ("X-Timestamp", timestamp.to_string()),
+                ("X-Nonce", nonce),
+                ("Authorization", format!("Age-Auth {}", BASE64.encode(&sig))),
+            ]
+        }
+
+        fn router(&self) -> axum::Router {
+            create_router(self.state.clone())
+        }
+
+        fn file_path(&self, name: &str) -> std::path::PathBuf {
+            self.dir.path().join(name)
+        }
+    }
+
+    fn make_request(method: &str, uri: &str, headers: &[(&'static str, String)]) -> Request<Body> {
+        let mut builder = Request::builder().method(method).uri(uri);
+        for (k, v) in headers {
+            builder = builder.header(*k, v);
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    async fn body_bytes(resp: axum::response::Response) -> bytes::Bytes {
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+    }
+
+    // Download a file via the chunked resumable API and return the assembled plaintext.
+    async fn download_via_chunks(env: &TestEnv, path: &str) -> Vec<u8> {
+        let router = env.router();
+
+        // 1. Fetch chunk manifest
+        let resp = router
+            .clone()
+            .oneshot(make_request(
+                "GET",
+                &format!("/api/v1/chunks/{path}"),
+                &env.auth_headers(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "chunk manifest failed");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&body_bytes(resp).await).unwrap();
+
+        let chunk_count = manifest["chunk_count"].as_u64().unwrap();
+        let epk_hex = manifest["ephemeral_public_key"].as_str().unwrap().to_string();
+        let nonce_hex = manifest["file_nonce"].as_str().unwrap().to_string();
+        let content_hash = manifest["content_hash"].as_str().unwrap().to_string();
+
+        let epk_bytes = hex::decode(&epk_hex).unwrap();
+        let nonce_bytes = hex::decode(&nonce_hex).unwrap();
+
+        // 2. Download and decrypt each chunk
+        let mut plaintext = Vec::new();
+        for i in 0..chunk_count {
+            let resp = router
+                .clone()
+                .oneshot(make_request(
+                    "GET",
+                    &format!("/api/v1/chunk/{i}/{path}"),
+                    &env.auth_headers(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "chunk {i} fetch failed");
+            let ciphertext = body_bytes(resp).await.to_vec();
+
+            let payload = encryption::ChunkedEncrypted {
+                ephemeral_public_key: epk_bytes.clone(),
+                file_nonce: nonce_bytes.clone(),
+                chunk_count,
+                chunks: {
+                    let mut v: Vec<Vec<u8>> = (0..i).map(|_| vec![]).collect();
+                    v.push(ciphertext);
+                    v
+                },
+            };
+            let chunk_plain =
+                encryption::decrypt_chunk(&env.client_x25519_identity, &payload, i as usize)
+                    .unwrap();
+            plaintext.extend_from_slice(&chunk_plain);
+        }
+
+        // 3. Verify hash matches what manifest promised
+        let actual_hash = format!("sha256:{}", hex::encode(Sha256::digest(&plaintext)));
+        assert_eq!(
+            actual_hash, content_hash,
+            "assembled plaintext hash does not match manifest content_hash"
+        );
+
+        plaintext
+    }
+
+    #[tokio::test]
+    async fn test_chunk_download_hash_matches_original() {
+        let content = b"hello from the trust distribution system";
+        let env = TestEnv::new("test.txt", content);
+
+        let downloaded = download_via_chunks(&env, "test.txt").await;
+        assert_eq!(downloaded, content);
+    }
+
+    #[tokio::test]
+    async fn test_chunk_download_large_file_hash_matches() {
+        // Larger than CHUNK_SIZE to exercise the multi-chunk path
+        let content: Vec<u8> = (0..encryption::CHUNK_SIZE + 1024)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let env = TestEnv::new("large.bin", &content);
+
+        let downloaded = download_via_chunks(&env, "large.bin").await;
+        assert_eq!(downloaded, content);
+    }
+
+    #[tokio::test]
+    async fn test_manifest_hash_matches_chunk_download() {
+        let content = b"manifest and chunk must agree on hash";
+        let env = TestEnv::new("data.txt", content);
+        let router = env.router();
+
+        // Fetch manifest
+        let resp = router
+            .clone()
+            .oneshot(make_request(
+                "GET",
+                "/api/v1/manifest",
+                &env.auth_headers(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&body_bytes(resp).await).unwrap();
+
+        let files = manifest["files"].as_array().unwrap();
+        let entry = files
+            .iter()
+            .find(|f| f["path"].as_str() == Some("data.txt"))
+            .expect("data.txt not in manifest");
+        let manifest_hash = entry["content_hash"].as_str().unwrap().to_string();
+
+        // Download via chunks — download_via_chunks asserts chunk manifest hash matches plaintext.
+        // Also assert it equals the file-level manifest hash.
+        let downloaded = download_via_chunks(&env, "data.txt").await;
+        let actual_hash = format!("sha256:{}", hex::encode(Sha256::digest(&downloaded)));
+        assert_eq!(
+            actual_hash, manifest_hash,
+            "chunk download hash does not match manifest-level hash"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_updated_file_serves_new_content() {
+        let env = TestEnv::new("update.txt", b"version one");
+        let router = env.router();
+
+        // Download v1
+        let v1 = download_via_chunks(&env, "update.txt").await;
+        assert_eq!(v1, b"version one");
+
+        // Update file on disk
+        std::fs::write(env.file_path("update.txt"), b"version two").unwrap();
+
+        // Download again — must get v2, not the cached v1
+        let resp = router
+            .clone()
+            .oneshot(make_request(
+                "GET",
+                "/api/v1/manifest",
+                &env.auth_headers(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&body_bytes(resp).await).unwrap();
+        let files = manifest["files"].as_array().unwrap();
+        let entry = files
+            .iter()
+            .find(|f| f["path"].as_str() == Some("update.txt"))
+            .expect("update.txt not in manifest");
+        let new_hash = entry["content_hash"].as_str().unwrap();
+        let expected_hash = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(b"version two"))
+        );
+        assert_eq!(new_hash, expected_hash, "manifest did not reflect updated file");
+
+        let v2 = download_via_chunks(&env, "update.txt").await;
+        assert_eq!(v2, b"version two", "chunk download still serving stale content");
+    }
 }
