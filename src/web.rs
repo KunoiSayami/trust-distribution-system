@@ -887,20 +887,9 @@ mod tests {
             self.dir.path().join(name)
         }
 
-        /// Returns the relative path the server assigns to a file:
-        /// "parent_dir_name/filename", matching `configure.rs` single-file logic.
+        /// Returns the relative path the server assigns to a file: "group_name:filename".
         fn relative_path(&self, name: &str) -> String {
-            let full = self.file_path(name);
-            let parent = full
-                .parent()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if parent.is_empty() {
-                name.to_string()
-            } else {
-                format!("{parent}/{name}")
-            }
+            format!("test-group:{name}")
         }
     }
 

@@ -112,7 +112,26 @@ impl ServerConfig {
             }
         }
 
-        // Group paths: each configured path must exist and files must be readable
+        // Group names: only alphanumeric, hyphen, underscore (no slash, colon, etc.)
+        // The group name is used as a path prefix exposed to clients; unsafe characters
+        // would allow path traversal or ambiguous segment splitting.
+        for group_name in self.groups.keys() {
+            if group_name.is_empty() {
+                anyhow::bail!("Group name must not be empty");
+            }
+            if group_name
+                .chars()
+                .any(|c| !c.is_alphanumeric() && c != '-' && c != '_')
+            {
+                anyhow::bail!(
+                    "Group {group_name:?}: name contains invalid characters (allowed: alphanumeric, -, _)"
+                );
+            }
+        }
+
+        // Group paths: each configured path must exist and files must be readable.
+        // Also verify the common parent of all paths in a group is not the filesystem
+        // root, which would expose the full directory structure to clients.
         for (group_name, group) in &self.groups {
             for path_str in &group.paths {
                 let path = std::path::Path::new(path_str);
@@ -121,6 +140,26 @@ impl ServerConfig {
                 }
                 if path.is_file() {
                     check_file_readable(path, &format!("Group {group_name:?} path"))?;
+                }
+            }
+            if !group.paths.is_empty() {
+                let roots: Vec<PathBuf> = group
+                    .paths
+                    .iter()
+                    .map(|p| {
+                        let path = PathBuf::from(p);
+                        if path.is_dir() {
+                            path
+                        } else {
+                            path.parent().unwrap_or(&path).to_path_buf()
+                        }
+                    })
+                    .collect();
+                let common = common_parent(&roots);
+                if common == std::path::Path::new("/") {
+                    anyhow::bail!(
+                        "Group {group_name:?}: paths span the filesystem root — configure a more specific common directory to avoid exposing the full path structure"
+                    );
                 }
             }
         }
@@ -142,7 +181,12 @@ impl ServerConfig {
         Ok(())
     }
 
-    /// Get all files available for a specific client
+    /// Get all files available for a specific client.
+    ///
+    /// Relative paths use the format `{group_name}:{path_from_common_parent}` where
+    /// the common parent is computed across all path roots in the group. This ensures
+    /// no absolute filesystem paths are exposed to clients while still producing unique
+    /// identities for same-named files in different subdirectories.
     pub fn get_client_files(&self, client_id: &str) -> Vec<FileInfo> {
         let Some(client) = self.clients.get(client_id) else {
             return vec![];
@@ -151,43 +195,64 @@ impl ServerConfig {
         let mut files = Vec::new();
         for group_name in &client.groups {
             if let Some(group) = self.groups.get(group_name) {
+                // Collect the "root" directory for each configured path:
+                // directories use themselves; single files use their parent.
+                let roots: Vec<PathBuf> = group
+                    .paths
+                    .iter()
+                    .map(|p| {
+                        let path = PathBuf::from(p);
+                        if path.is_dir() {
+                            path
+                        } else {
+                            path.parent()
+                                .unwrap_or(std::path::Path::new("/"))
+                                .to_path_buf()
+                        }
+                    })
+                    .collect();
+
+                let base = if roots.is_empty() {
+                    PathBuf::from("/")
+                } else {
+                    common_parent(&roots)
+                };
+
                 for path_str in &group.paths {
                     let path = PathBuf::from(path_str);
 
-                    // Auto-detect: check if path is directory or file
                     if path.is_dir() {
-                        // Scan directory recursively
-                        if let Ok(entries) = Self::scan_directory(path_str) {
-                            for (source, relative) in entries {
+                        if let Ok(entries) = Self::scan_directory_rooted(path_str) {
+                            for (source, file_rel) in entries {
+                                // Path of file relative to the directory entry itself,
+                                // then make the directory entry relative to the common base.
+                                let dir_rel = path
+                                    .strip_prefix(&base)
+                                    .unwrap_or(&path)
+                                    .to_string_lossy()
+                                    .replace('\\', "/");
+                                let relative_path = if dir_rel.is_empty() {
+                                    format!("{group_name}:{file_rel}")
+                                } else {
+                                    format!("{group_name}:{dir_rel}/{file_rel}")
+                                };
                                 files.push(FileInfo {
                                     source_path: source,
-                                    relative_path: relative,
+                                    relative_path,
                                     group: group_name.clone(),
                                 });
                             }
                         }
                     } else if path.is_file() {
-                        // Single file: use "parent_dir_name/filename" to mirror how
-                        // scan_directory names files, giving distinct identities to files
-                        // with the same name in different directories.
-                        let parent_name = path
-                            .parent()
-                            .and_then(|p| p.file_name())
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        let file_name = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        let relative_path = if parent_name.is_empty() {
-                            file_name
-                        } else {
-                            format!("{parent_name}/{file_name}")
-                        };
-                        if !relative_path.is_empty() {
+                        let rel = path
+                            .strip_prefix(&base)
+                            .unwrap_or(path.file_name().map(std::path::Path::new).unwrap_or(&path))
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        if !rel.is_empty() {
                             files.push(FileInfo {
                                 source_path: path,
-                                relative_path,
+                                relative_path: format!("{group_name}:{rel}"),
                                 group: group_name.clone(),
                             });
                         }
@@ -216,31 +281,71 @@ impl ServerConfig {
             .collect()
     }
 
-    /// Recursively scan a directory and return (source_path, relative_path) pairs
-    fn scan_directory(dir: &str) -> anyhow::Result<Vec<(PathBuf, String)>> {
+    /// Recursively scan a directory and return (source_path, relative_path) pairs.
+    /// relative_path is relative to `dir` itself (no leading directory name component),
+    /// so callers can prepend whatever prefix they need (e.g. the group name).
+    fn scan_directory_rooted(dir: &str) -> anyhow::Result<Vec<(PathBuf, String)>> {
         use walkdir::WalkDir;
 
         let dir_path = PathBuf::from(dir);
-        let dir_name = dir_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
 
         let mut results = Vec::new();
         for entry in WalkDir::new(dir).follow_links(true) {
             let entry = entry?;
             if entry.file_type().is_file() {
                 let source = entry.path().to_path_buf();
-                // Create relative path under the directory name
                 let relative = entry
                     .path()
                     .strip_prefix(&dir_path)
-                    .map(|p| format!("{}/{}", dir_name, p.to_string_lossy()).replace('\\', "/"))
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
                     .unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
                 results.push((source, relative));
             }
         }
         Ok(results)
+    }
+}
+
+/// Compute the longest common ancestor directory of a set of paths.
+/// Returns `/` if no common ancestor exists above the root.
+fn common_parent(paths: &[PathBuf]) -> PathBuf {
+    let mut paths = paths.iter();
+    let Some(first) = paths.next() else {
+        return PathBuf::from("/");
+    };
+
+    let mut common: Vec<&std::ffi::OsStr> = first
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+
+    for path in paths {
+        let components: Vec<&std::ffi::OsStr> = path
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        let shared = common
+            .iter()
+            .zip(components.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        common.truncate(shared);
+    }
+
+    if common.is_empty() {
+        PathBuf::from("/")
+    } else {
+        let mut result = PathBuf::from("/");
+        for part in common {
+            result.push(part);
+        }
+        result
     }
 }
 
