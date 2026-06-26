@@ -61,10 +61,10 @@ enum Commands {
 }
 
 async fn run_client(config_path: PathBuf, once: bool) -> anyhow::Result<()> {
-    log::info!("Loading configuration from {config_path:?}");
+    tracing::info!("Loading configuration from {config_path:?}");
     let config = ClientConfig::load(&config_path)?;
 
-    log::info!("Loading client keys...");
+    tracing::info!("Loading client keys...");
     let signing_key =
         encryption::async_fn::load_signing_key(&config.client.keys.signing_key_path).await?;
     let x25519_identity =
@@ -96,14 +96,14 @@ async fn run_client(config_path: PathBuf, once: bool) -> anyhow::Result<()> {
         sync_once(&client, &config, &mut state, &subscribed_groups).await?;
     } else {
         let poll_interval = std::time::Duration::from_secs(config.client.poll_interval);
-        log::info!(
+        tracing::info!(
             "Starting polling loop (interval: {}s)",
             config.client.poll_interval
         );
 
         loop {
             if let Err(e) = sync_once(&client, &config, &mut state, &subscribed_groups).await {
-                log::error!("Sync failed: {e:?}");
+                tracing::error!("Sync failed: {e:#}");
             }
 
             tokio::time::sleep(poll_interval).await;
@@ -132,7 +132,7 @@ async fn download_with_retry(
             Err(e) => {
                 last_err = e;
                 if attempt < DOWNLOAD_MAX_ATTEMPTS {
-                    log::warn!(
+                    tracing::warn!(
                         "Download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} failed for {path}: {last_err}; retrying…"
                     );
                     tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt - 1))).await;
@@ -149,18 +149,18 @@ async fn sync_once(
     state: &mut SyncState,
     subscribed_groups: &[String],
 ) -> anyhow::Result<()> {
-    //log::trace!("Fetching manifest...");
+    //tracing::trace!("Fetching manifest...");
     let manifest = client.fetch_manifest().await?;
-    log::trace!("Manifest has {} files", manifest.files.len());
+    tracing::trace!("Manifest has {} files", manifest.files.len());
 
     let to_download = sync::files_to_download(&manifest, state, subscribed_groups);
 
     if to_download.is_empty() {
-        log::trace!("All files up to date");
+        tracing::trace!("All files up to date");
         return Ok(());
     }
 
-    log::debug!(
+    tracing::debug!(
         "{} file(s) need updating: {}",
         to_download.len(),
         to_download
@@ -173,12 +173,12 @@ async fn sync_once(
     let mut downloaded_files = Vec::new();
 
     for file in &to_download {
-        log::trace!("Downloading: {}", file.path);
+        tracing::trace!("Downloading: {}", file.path);
 
         let output_path = match sync::get_output_path(file, config) {
             Some(p) => p,
             None => {
-                log::warn!(
+                tracing::warn!(
                     "No subscription for group {}, skipping {}",
                     file.group,
                     file.path
@@ -203,7 +203,7 @@ async fn sync_once(
 
         match result {
             Ok(content) => {
-                log::trace!("Wrote {} ({} bytes)", output_path.display(), content.len());
+                tracing::trace!("Wrote {} ({} bytes)", output_path.display(), content.len());
 
                 state.file_metadata.insert(
                     file.path.clone(),
@@ -218,7 +218,7 @@ async fn sync_once(
                 downloaded_files.push(file.clone());
             }
             Err(e) => {
-                log::error!("Failed to download {}: {e}", file.path);
+                tracing::error!("Failed to download {}: {e}", file.path);
             }
         }
     }
@@ -248,7 +248,7 @@ async fn sync_once(
 
         match result {
             Ok(_) => {
-                log::info!(
+                tracing::info!(
                     "Downloaded binary {} to {}",
                     binary_entry.name,
                     output_path.display()
@@ -261,14 +261,14 @@ async fn sync_once(
                     },
                 );
                 if let Err(e) = binaries::apply_post_download(sub, output_path) {
-                    log::error!(
+                    tracing::error!(
                         "Post-download action failed for binary {}: {e}",
                         binary_entry.name
                     );
                 }
             }
             Err(e) => {
-                log::error!("Failed to download binary {}: {e}", binary_entry.name);
+                tracing::error!("Failed to download binary {}: {e}", binary_entry.name);
             }
         }
     }
@@ -295,18 +295,18 @@ async fn sync_once(
     state.save(&config.client.state_file)?;
 
     if !downloaded_files.is_empty() {
-        //log::debug!("Executing post-download actions...");
+        //tracing::debug!("Executing post-download actions...");
         if let Err(e) = actions::execute_actions(&downloaded_files, config) {
-            log::error!("Action execution failed: {e:?}");
+            tracing::error!("Action execution failed: {e:?}");
         }
     }
 
-    log::info!("{} file(s) updated", to_download.len());
+    tracing::info!("{} file(s) updated", to_download.len());
     Ok(())
 }
 
 async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
-    log::info!("Generating client keys in {output:?}");
+    tracing::info!("Generating client keys in {output:?}");
 
     tokio::fs::create_dir_all(&output).await?;
 
@@ -319,8 +319,8 @@ async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
     encryption::async_fn::write_verifying_key(&verifying_key_path, &signing_key.verifying_key())
         .await?;
 
-    log::info!("Wrote signing key to {signing_key_path:?}");
-    log::info!("Wrote verifying key to {verifying_key_path:?}");
+    tracing::info!("Wrote signing key to {signing_key_path:?}");
+    tracing::info!("Wrote verifying key to {verifying_key_path:?}");
 
     // Generate X25519 identity
     let x25519_identity = encryption::X25519Identity::generate();
@@ -328,7 +328,7 @@ async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
 
     encryption::async_fn::write_x25519_identity(&x25519_identity_path, &x25519_identity).await?;
 
-    log::info!("Wrote X25519 identity to {x25519_identity_path:?}");
+    tracing::info!("Wrote X25519 identity to {x25519_identity_path:?}");
 
     println!("\nClient keys generated successfully!");
     println!("Signing key: {signing_key_path:?}");

@@ -78,7 +78,7 @@ async fn manifest_handler(
         let metadata = match tokio::fs::metadata(&file_info.source_path).await {
             Ok(m) => m,
             Err(e) => {
-                log::warn!(
+                tracing::warn!(
                     "Failed to read metadata for {}: {e}",
                     file_info.source_path.display()
                 );
@@ -124,7 +124,7 @@ async fn manifest_handler(
         let metadata = match tokio::fs::metadata(&binary_info.source_path).await {
             Ok(m) => m,
             Err(e) => {
-                log::warn!(
+                tracing::warn!(
                     "Failed to read metadata for binary {}: {e}",
                     binary_info.source_path.display()
                 );
@@ -169,7 +169,7 @@ async fn manifest_handler(
             )
         })?;
 
-    log::trace!(
+    tracing::trace!(
         "[manifest sign] timestamp={} files_len={} directives_len={} binaries_len={} sig={}",
         timestamp,
         files_data.len(),
@@ -616,7 +616,7 @@ async fn enroll_handler(
                 )),
             )
         })?;
-        log::info!("Localhost enrollment for client: {}", client_id);
+        tracing::info!("Localhost enrollment for client: {}", client_id);
         (client_id, groups)
     } else {
         let token_entry = token_store.validate(&request.token_secret).ok_or_else(|| {
@@ -713,7 +713,7 @@ async fn enroll_handler(
             )
         })?;
 
-    log::info!("Enrolled new client: {client_id} with groups: {groups:?}",);
+    tracing::info!("Enrolled new client: {client_id} with groups: {groups:?}",);
 
     Ok(Json(EnrollResponse { client_id, groups }))
 }
@@ -759,9 +759,9 @@ pub async fn run_server(state: AppState, bind: &str) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(bind)
         .await
-        .inspect_err(|e| log::error!("Web server bind error: {e:?}"))?;
+        .inspect_err(|e| tracing::error!("Web server bind error: {e:?}"))?;
 
-    log::info!("Server listening on {bind}");
+    tracing::info!("Server listening on {bind}");
 
     axum::serve(
         listener,

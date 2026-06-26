@@ -222,7 +222,7 @@ pub async fn admin_create_tokens(
         token_store.add(entry);
     }
 
-    log::info!(
+    tracing::info!(
         "Admin created {} token(s) for client_id pattern: {}",
         count,
         request.client_id
@@ -261,7 +261,7 @@ pub async fn admin_revoke_tokens(
     let mut token_store = state.token_store.write().await;
 
     if token_store.revoke(&client_id) {
-        log::info!("Admin revoked token(s) for client_id: {}", client_id);
+        tracing::info!("Admin revoked token(s) for client_id: {}", client_id);
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((
@@ -315,7 +315,7 @@ pub async fn admin_set_force_sync(
         },
     );
 
-    log::info!("Admin set force-sync token for group '{group}': {token}");
+    tracing::info!("Admin set force-sync token for group '{group}': {token}");
 
     Ok(Json(AdminForceSyncResponse {
         group,
@@ -335,7 +335,7 @@ pub async fn admin_clear_force_sync(
 
     state.group_directives().remove(&group);
 
-    log::info!("Admin cleared force-sync for group '{group}'");
+    tracing::info!("Admin cleared force-sync for group '{group}'");
 
     Ok(Json(AdminForceSyncResponse {
         group,
@@ -360,7 +360,7 @@ pub async fn admin_clear_cache(
     let entries_removed = state.chunk_cache.len();
     state.chunk_cache.clear();
 
-    log::info!("Admin cleared chunk cache ({entries_removed} entries removed)");
+    tracing::info!("Admin cleared chunk cache ({entries_removed} entries removed)");
 
     Ok(Json(AdminCacheClearResponse { entries_removed }))
 }
@@ -377,7 +377,7 @@ pub async fn admin_clear_client_cache(
     state.chunk_cache.retain(|(cid, _, _), _| cid != &client_id);
     let entries_removed = before - state.chunk_cache.len();
 
-    log::info!(
+    tracing::info!(
         "Admin cleared chunk cache for client '{client_id}' ({entries_removed} entries removed)"
     );
 

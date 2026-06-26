@@ -54,13 +54,13 @@ pub fn execute_actions(
 
     // Run immediate actions in collection order
     for (action, label) in &immediate_actions {
-        log::trace!("Running immediate action for {label}");
+        tracing::trace!("Running immediate action for {label}");
         run_action(action).with_context(|| format!("Failed to run action for {label}"))?;
     }
 
     // Run deduplicated deferred actions
     for action in &deferred_actions {
-        log::trace!("Running action: {} {:?}", action.command, action.args);
+        tracing::trace!("Running action: {} {:?}", action.command, action.args);
         run_action(action).with_context(|| format!("Failed to run action: {}", action.command))?;
     }
 
@@ -73,7 +73,7 @@ pub fn execute_all_actions(config: &ClientConfig) -> anyhow::Result<()> {
     // Execute all group actions
     for (group, entry) in &config.actions.groups {
         for action in config.actions.resolve_all(entry) {
-            log::trace!("Running group action for {group}");
+            tracing::trace!("Running group action for {group}");
             run_action(action)
                 .with_context(|| format!("Failed to run action for group {group}"))?;
         }
@@ -82,7 +82,7 @@ pub fn execute_all_actions(config: &ClientConfig) -> anyhow::Result<()> {
     // Execute all file actions
     for (file, entry) in &config.actions.files {
         for action in config.actions.resolve_all(entry) {
-            log::info!("Running file action for {file}");
+            tracing::info!("Running file action for {file}");
             run_action(action).with_context(|| format!("Failed to run action for file {file}"))?;
         }
     }

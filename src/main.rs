@@ -177,18 +177,18 @@ enum TokenAction {
 }
 
 async fn run_server(config_path: PathBuf) -> anyhow::Result<()> {
-    log::info!("Loading configuration from {config_path:?}");
+    tracing::info!("Loading configuration from {config_path:?}");
     let config = ServerConfig::load(&config_path)?;
     config.validate()?;
 
-    log::info!("Loading server keys...");
+    tracing::info!("Loading server keys...");
     let signing_key =
         encryption::async_fn::load_signing_key(&config.server.keys.signing_key_path).await?;
     let x25519_identity =
         encryption::async_fn::load_x25519_identity(&config.server.keys.x25519_identity_path)
             .await?;
 
-    log::info!(
+    tracing::info!(
         "Server X25519 recipient: {}",
         x25519_identity.to_recipient().to_string()
     );
@@ -217,16 +217,16 @@ async fn run_server(config_path: PathBuf) -> anyhow::Result<()> {
     });
 
     if config.server.admin.is_some() {
-        log::info!("Admin endpoint enabled at /api/v1/admin/tokens");
+        tracing::info!("Admin endpoint enabled at /api/v1/admin/tokens");
     } else {
-        log::warn!("Admin endpoint disabled (no [server.admin] config)");
+        tracing::warn!("Admin endpoint disabled (no [server.admin] config)");
     }
 
     web::run_server(state, &config.server.bind).await
 }
 
 async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
-    log::info!("Generating server keys in {:?}", output);
+    tracing::info!("Generating server keys in {:?}", output);
 
     // Create output directory if needed
     tokio::fs::create_dir_all(&output).await?;
@@ -240,8 +240,8 @@ async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
     encryption::async_fn::write_verifying_key(&verifying_key_path, &signing_key.verifying_key())
         .await?;
 
-    log::info!("Wrote signing key to {signing_key_path:?}");
-    log::info!("Wrote verifying key to {verifying_key_path:?}");
+    tracing::info!("Wrote signing key to {signing_key_path:?}");
+    tracing::info!("Wrote verifying key to {verifying_key_path:?}");
 
     // Generate X25519 identity
     let x25519_identity = encryption::X25519Identity::generate();
@@ -249,8 +249,8 @@ async fn generate_keys(output: PathBuf) -> anyhow::Result<()> {
 
     encryption::async_fn::write_x25519_identity(&x25519_identity_path, &x25519_identity).await?;
 
-    log::info!("Wrote X25519 identity to {x25519_identity_path:?}");
-    log::info!(
+    tracing::info!("Wrote X25519 identity to {x25519_identity_path:?}");
+    tracing::info!(
         "Server X25519 recipient (share with clients): {}",
         x25519_identity.to_recipient().to_string()
     );
@@ -641,7 +641,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_default_env().init();
+    tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
 

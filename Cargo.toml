@@ -1,6 +1,6 @@
 [package]
 name = "trust-distribution-system"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 default-run = "server"
 
@@ -15,13 +15,10 @@ clap = { version = "4", features = ["cargo", "derive"] }
 dashmap = "6"
 data-encoding = "2"
 encryption = { path = "lib/encryption" }
-env_logger = "0.11"
 hex = "0.4"
 kstool = { version = "0.3", features = ["jiff"] }
-log = { version = "0.4", features = [
-    "release_max_level_debug",
-    "max_level_trace",
-] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 pub-impl = { path = "lib/pub-impl" }
 rand = "0.10"
 reqwest = { version = "0.13", features = ["json", "rustls"] }

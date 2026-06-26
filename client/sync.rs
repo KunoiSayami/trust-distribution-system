@@ -257,7 +257,7 @@ impl TdsClient {
             .decode(&manifest.signature)
             .context("Invalid manifest signature encoding")?;
 
-        log::trace!(
+        tracing::trace!(
             "[manifest verify] version={} timestamp={} data_len={} sig={}",
             manifest.version,
             manifest.timestamp,

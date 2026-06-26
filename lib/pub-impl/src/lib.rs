@@ -81,26 +81,26 @@ impl ParsedToken {
 }
 
 pub fn init_log(verbose: u8) {
-    let mut builder = env_logger::Builder::from_default_env();
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    let mut filter = EnvFilter::from_default_env();
 
     if verbose < 4 {
-        builder
-            .filter_module("h2::proto", log::LevelFilter::Warn)
-            .filter_module("rustls_platform_verifier", log::LevelFilter::Warn);
+        filter = filter
+            .add_directive("h2::proto=warn".parse().unwrap())
+            .add_directive("rustls_platform_verifier=warn".parse().unwrap());
     }
-
     if verbose < 3 {
-        builder
-            .filter_module("h2::codec", log::LevelFilter::Warn)
-            .filter_module("h2::client", log::LevelFilter::Warn);
+        filter = filter
+            .add_directive("h2::codec=warn".parse().unwrap())
+            .add_directive("h2::client=warn".parse().unwrap());
     }
-
     if verbose < 2 {
-        builder.filter_module("hyper_util::client", log::LevelFilter::Warn);
+        filter = filter.add_directive("hyper_util::client=warn".parse().unwrap());
     }
     if verbose < 1 {
-        builder.filter_module("reqwest::connect", log::LevelFilter::Warn);
+        filter = filter.add_directive("reqwest::connect=warn".parse().unwrap());
     }
 
-    builder.init();
+    fmt().with_env_filter(filter).init();
 }
