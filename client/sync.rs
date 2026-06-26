@@ -640,10 +640,19 @@ pub fn files_to_download(
 pub fn get_output_path(file: &ManifestFileEntry, config: &ClientConfig) -> Option<PathBuf> {
     let subscription = config.subscriptions.get(&file.group)?;
 
-    let filename = std::path::Path::new(&file.path)
+    // Strip the "group:" prefix from the path — the relative portion after the
+    // colon is what drives output structure. If there is no colon (old server),
+    // fall back to using the full path string as before.
+    let relative = file
+        .path
+        .split_once(':')
+        .map(|(_, r)| r)
+        .unwrap_or(&file.path);
+
+    let filename = std::path::Path::new(relative)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| file.path.clone());
+        .unwrap_or_else(|| relative.to_string());
 
     let final_name = subscription
         .rename
@@ -652,7 +661,7 @@ pub fn get_output_path(file: &ManifestFileEntry, config: &ClientConfig) -> Optio
         .unwrap_or(filename);
 
     let path = if subscription.preserve_structure {
-        let parent = std::path::Path::new(&file.path).parent();
+        let parent = std::path::Path::new(relative).parent();
         match parent {
             Some(p) if !p.as_os_str().is_empty() => {
                 subscription.output_directory.join(p).join(&final_name)
