@@ -268,7 +268,8 @@ pub fn verify_hash(content: &[u8], expected_hash: &str) -> bool {
 mod test {
     use super::*;
 
-    const CONTENT: &[u8] = b"Hello, World!";
+    const CONTENT: &[u8] =
+        b"The quick brown fox jumps over the lazy dog. Sphinx of black quartz, judge my vow.";
 
     #[test]
     fn test_generate_keypair() {
@@ -375,6 +376,100 @@ mod test {
         assert!(hash.starts_with("sha256:"));
         assert!(verify_hash(CONTENT, &hash));
         assert!(!verify_hash(b"wrong", &hash));
+    }
+
+    #[test]
+    fn test_decrypt_corrupted_ciphertext() {
+        let ks = generate_keypair();
+        let encrypted = encrypt(&ks.x25519_recipient, CONTENT.to_vec()).unwrap();
+        let mut chunked = encrypted.chunked().unwrap();
+
+        chunked.chunks[0][0] ^= 0xFF;
+
+        assert!(decrypt(ks.x25519_identity.as_ref().unwrap(), &chunked).is_err());
+    }
+
+    #[test]
+    fn test_decrypt_chunk_corrupted_ciphertext() {
+        let ks = generate_keypair();
+        let encrypted = encrypt(&ks.x25519_recipient, CONTENT.to_vec()).unwrap();
+        let mut chunked = encrypted.chunked().unwrap();
+
+        let last = chunked.chunks[0].len() - 1;
+        chunked.chunks[0][last] ^= 0x01;
+
+        assert!(decrypt_chunk(ks.x25519_identity.as_ref().unwrap(), &chunked, 0).is_err());
+    }
+
+    #[test]
+    fn test_decrypt_truncated_chunk() {
+        let ks = generate_keypair();
+        let encrypted = encrypt(&ks.x25519_recipient, CONTENT.to_vec()).unwrap();
+        let mut chunked = encrypted.chunked().unwrap();
+
+        chunked.chunks[0].truncate(4);
+
+        assert!(decrypt(ks.x25519_identity.as_ref().unwrap(), &chunked).is_err());
+    }
+
+    #[test]
+    fn test_decrypt_empty_chunk() {
+        let ks = generate_keypair();
+        let encrypted = encrypt(&ks.x25519_recipient, CONTENT.to_vec()).unwrap();
+        let mut chunked = encrypted.chunked().unwrap();
+
+        chunked.chunks[0].clear();
+
+        assert!(decrypt(ks.x25519_identity.as_ref().unwrap(), &chunked).is_err());
+    }
+
+    #[test]
+    fn test_decrypt_corrupted_ephemeral_key() {
+        let ks = generate_keypair();
+        let encrypted = encrypt(&ks.x25519_recipient, CONTENT.to_vec()).unwrap();
+        let mut chunked = encrypted.chunked().unwrap();
+
+        chunked.ephemeral_public_key[0] ^= 0xFF;
+
+        assert!(decrypt(ks.x25519_identity.as_ref().unwrap(), &chunked).is_err());
+    }
+
+    #[test]
+    fn test_decrypt_corrupted_file_nonce() {
+        let ks = generate_keypair();
+        let encrypted = encrypt(&ks.x25519_recipient, CONTENT.to_vec()).unwrap();
+        let mut chunked = encrypted.chunked().unwrap();
+
+        chunked.file_nonce[0] ^= 0xFF;
+
+        assert!(decrypt(ks.x25519_identity.as_ref().unwrap(), &chunked).is_err());
+    }
+
+    #[test]
+    fn test_verify_tampered_signature() {
+        let ks = generate_keypair();
+        let (mut signature, timestamp) = sign(ks.signing_key.as_ref().unwrap(), CONTENT).unwrap();
+
+        signature[0] ^= 0xFF;
+
+        assert!(!verify(&ks.verifying_key, CONTENT, &signature, timestamp).unwrap());
+    }
+
+    #[test]
+    fn test_verify_wrong_key() {
+        let ks = generate_keypair();
+        let other_ks = generate_keypair();
+        let (signature, timestamp) = sign(ks.signing_key.as_ref().unwrap(), CONTENT).unwrap();
+
+        assert!(!verify(&other_ks.verifying_key, CONTENT, &signature, timestamp).unwrap());
+    }
+
+    #[test]
+    fn test_verify_hash_corrupted() {
+        let hash = hash_content(CONTENT);
+        let mut corrupted = CONTENT.to_vec();
+        corrupted[0] ^= 0x01;
+        assert!(!verify_hash(&corrupted, &hash));
     }
 
     #[test]
