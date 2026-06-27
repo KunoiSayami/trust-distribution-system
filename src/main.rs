@@ -10,6 +10,7 @@ mod web;
 
 use configure::ServerConfig;
 use enrollment::TokenStore;
+use pub_impl::init_log;
 use types::AppState;
 
 #[derive(Parser)]
@@ -23,6 +24,10 @@ struct Cli {
     /// Configuration file path
     #[arg(short, long, default_value = "server.toml")]
     config: PathBuf,
+
+    /// Increase log verbosity (use multiple times for more detail)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 #[derive(Subcommand)]
@@ -641,9 +646,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-
     let cli = Cli::parse();
+
+    init_log(cli.verbose);
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

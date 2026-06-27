@@ -93,14 +93,22 @@ pub fn init_log(verbose: u8) {
     if verbose < 3 {
         filter = filter
             .add_directive("h2::codec=warn".parse().unwrap())
+            .add_directive("hpack=warn".parse().unwrap())
             .add_directive("h2::client=warn".parse().unwrap());
     }
     if verbose < 2 {
-        filter = filter.add_directive("hyper_util::client=warn".parse().unwrap());
+        filter = filter
+            .add_directive("hyper_util::client=warn".parse().unwrap())
+            .add_directive("h2::frame=warn".parse().unwrap());
     }
     if verbose < 1 {
         filter = filter.add_directive("reqwest::connect=warn".parse().unwrap());
     }
 
-    fmt().with_env_filter(filter).init();
+    let builder = fmt().with_env_filter(filter);
+    if std::env::var_os("JOURNAL_STREAM").is_some() {
+        builder.without_time().init();
+    } else {
+        builder.init();
+    }
 }
